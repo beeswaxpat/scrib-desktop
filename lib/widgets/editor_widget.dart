@@ -195,6 +195,15 @@ class ScribEditorState extends State<ScribEditor> {
       return const Center(child: CircularProgressIndicator());
     }
 
+    // Rich text paragraph base style uses a fixed default — NOT tabFontFamily/tabFontSize.
+    // In rich text mode, font and size are controlled exclusively through the formatting
+    // toolbar (inline Quill Delta attributes stored in the document). Passing tabFontFamily/
+    // tabFontSize here would cause the QuillEditor to rebuild and shift rendering every time
+    // the user triggered View > Text Size or switched plain-text font settings, interfering
+    // with any inline formatting they explicitly set via the formatting toolbar.
+    const richTextDefaultFontFamily = 'Calibri';
+    const richTextDefaultFontSize = 14.0;
+
     return QuillEditor(
       controller: _quillController!,
       focusNode: _quillFocusNode,
@@ -205,8 +214,8 @@ class ScribEditorState extends State<ScribEditor> {
         customStyles: DefaultStyles(
           paragraph: DefaultTextBlockStyle(
             TextStyle(
-              fontFamily: fontFamily,
-              fontSize: fontSize,
+              fontFamily: richTextDefaultFontFamily,
+              fontSize: richTextDefaultFontSize,
               color: isDark ? const Color(0xFFE0E0E0) : const Color(0xFF1A1A1A),
               height: 1.6,
             ),

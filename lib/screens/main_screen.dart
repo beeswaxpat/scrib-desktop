@@ -847,16 +847,22 @@ class _MainScreenState extends State<MainScreen> {
 
   void _zoomIn(BuildContext context) {
     final editor = context.read<EditorProvider>();
+    // Text size controls only apply in plain text mode.
+    // In rich text mode, font size is set per-selection via the formatting toolbar.
+    if (editor.activeTab?.mode == EditorMode.richText) return;
     editor.setTabFontSize((editor.activeTab?.tabFontSize ?? 14.0) + 1);
   }
 
   void _zoomOut(BuildContext context) {
     final editor = context.read<EditorProvider>();
+    if (editor.activeTab?.mode == EditorMode.richText) return;
     editor.setTabFontSize((editor.activeTab?.tabFontSize ?? 14.0) - 1);
   }
 
   void _resetZoom(BuildContext context) {
-    context.read<EditorProvider>().setTabFontSize(14.0);
+    final editor = context.read<EditorProvider>();
+    if (editor.activeTab?.mode == EditorMode.richText) return;
+    editor.setTabFontSize(14.0);
   }
 
   Future<String?> _showPasswordDialog(BuildContext context, String title, String message) async {

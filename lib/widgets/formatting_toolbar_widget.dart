@@ -435,7 +435,10 @@ class _FontFamilyDropdown extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = isDark ? const Color(0xFFB0B0B0) : const Color(0xFF555555);
-    final label = currentFont ?? systemFonts.first;
+    // Show 'Default' when no explicit font attribute is set on the selection.
+    // Previously showed systemFonts.first ("Segoe UI") which was misleading —
+    // unformatted text renders in the editor's fixed default (Calibri), not Segoe UI.
+    final label = currentFont ?? 'Default';
 
     return PopupMenuButton<String?>(
       tooltip: 'Font Family',
