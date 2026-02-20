@@ -1,0 +1,53 @@
+name: scrib_desktop
+description: "The encrypted Notepad. No tracking. No cloud. Just notes."
+publish_to: 'none'
+
+version: 1.1.0+2
+
+environment:
+  sdk: ^3.10.7
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Local storage - encrypted settings
+  hive: ^2.2.3
+
+  # State management
+  provider: ^6.1.2
+
+  # Unique IDs
+  uuid: ^4.5.1
+
+  # Date formatting
+  intl: ^0.20.2
+
+  # File system
+  path_provider: ^2.1.5
+  file_picker: ^8.1.6
+
+  # Encryption
+  encrypt: ^5.0.3
+  pointycastle: ^3.9.1
+
+  # Rich text editor
+  flutter_quill: ^11.0.0
+
+  # Desktop-specific
+  window_manager: ^0.4.2
+  desktop_drop: ^0.4.4
+  url_launcher: ^6.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  hive_generator: ^2.0.1
+  build_runner: ^2.4.13
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/scrib_icon.png
