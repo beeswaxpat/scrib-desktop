@@ -79,13 +79,13 @@ class ScribToolbar extends StatelessWidget {
 
           _toolbarDivider(isDark),
 
-          // Encrypt toggle
+          // Encrypt toggle — gold when locked
           _ToolbarButton(
             icon: isEncrypted ? Icons.lock : Icons.lock_open,
             tooltip: isEncrypted ? 'Decrypt (Ctrl+E)' : 'Encrypt (Ctrl+E)',
             onPressed: hasTab ? onToggleEncryption : null,
             isDark: isDark,
-            activeColor: isEncrypted ? colorScheme.primary : null,
+            activeColor: isEncrypted ? const Color(0xFFFBBF24) : null,
           ),
           // Find
           _ToolbarButton(

@@ -60,12 +60,12 @@ class ScribStatusBar extends StatelessWidget {
               isDark: isDark,
             ),
             _statusDivider(isDark),
-            // Encryption status
+            // Encryption status — gold lock when encrypted
             Icon(
               tab.isEncrypted ? Icons.lock : Icons.lock_open,
               size: 13,
               color: tab.isEncrypted
-                  ? colorScheme.primary
+                  ? const Color(0xFFFBBF24)
                   : (isDark ? const Color(0xFF606060) : const Color(0xFF999999)),
             ),
             const SizedBox(width: 4),
@@ -76,7 +76,7 @@ class ScribStatusBar extends StatelessWidget {
               style: TextStyle(
                 fontSize: 11,
                 color: tab.isEncrypted
-                    ? colorScheme.primary
+                    ? const Color(0xFFFBBF24)
                     : (isDark ? const Color(0xFF606060) : const Color(0xFF999999)),
               ),
             ),

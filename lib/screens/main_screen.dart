@@ -628,8 +628,15 @@ class _MainScreenState extends State<MainScreen> {
     );
 
     if (path != null && context.mounted) {
-      final isEncrypted = path.endsWith('.scrb');
-      final isRtf = path.endsWith('.rtf');
+      // If the tab is already marked encrypted (e.g. user clicked Encrypt before
+      // Save As was called), honour that even if they typed a name without .scrb.
+      // Silently append the extension so the file is properly encrypted on disk.
+      final effectivePath = (tab.isEncrypted && !path.endsWith('.scrb'))
+          ? _swapExtension(path, '.scrb')
+          : path;
+
+      final isEncrypted = effectivePath.endsWith('.scrb');
+      final isRtf = effectivePath.endsWith('.rtf');
       String? password;
       if (isEncrypted) {
         password = tab.password ?? await _showSetPasswordDialog(context);
@@ -644,10 +651,10 @@ class _MainScreenState extends State<MainScreen> {
         if (isRtf && tab.mode == EditorMode.richText && tab.deltaJson.isNotEmpty) {
           final rtfService = RtfService();
           final rtfContent = rtfService.deltaToRtf(tab.deltaJson);
-          await fileService.writeRtfFile(path, rtfContent);
-          editor.markTabSavedAs(path);
+          await fileService.writeRtfFile(effectivePath, rtfContent);
+          editor.markTabSavedAs(effectivePath);
         } else {
-          await editor.saveActiveTabAs(path, encrypted: isEncrypted, password: password);
+          await editor.saveActiveTabAs(effectivePath, encrypted: isEncrypted, password: password);
         }
       } catch (e) {
         if (context.mounted) {

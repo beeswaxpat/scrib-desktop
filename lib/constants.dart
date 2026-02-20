@@ -36,7 +36,7 @@ const List<Color> accentColors = [
   Color(0xFF008080), // Teal
   Color(0xFF0EA5E9), // Blue
   Color(0xFF7C3AED), // Purple
-  Color(0xFFEC4899), // Pink
+  Color(0xFFEF4444), // Crimson
   Color(0xFFFF9800), // Orange
 ];
 
