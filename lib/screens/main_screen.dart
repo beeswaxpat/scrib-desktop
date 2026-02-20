@@ -270,7 +270,7 @@ class _MainScreenState extends State<MainScreen> {
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   Actions.maybeInvoke(
                     primaryFocus?.context ?? context,
-                    const CopySelectionTextIntent(SelectionChangedCause.keyboard, collapseSelection: true),
+                    const CopySelectionTextIntent.cut(SelectionChangedCause.keyboard),
                   );
                 });
               },
@@ -282,7 +282,7 @@ class _MainScreenState extends State<MainScreen> {
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   Actions.maybeInvoke(
                     primaryFocus?.context ?? context,
-                    const CopySelectionTextIntent(SelectionChangedCause.keyboard, collapseSelection: false),
+                    CopySelectionTextIntent.copy,
                   );
                 });
               },
