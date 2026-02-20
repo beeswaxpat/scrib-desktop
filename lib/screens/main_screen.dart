@@ -15,6 +15,7 @@ import '../widgets/formatting_toolbar_widget.dart';
 import '../widgets/status_bar_widget.dart';
 import '../widgets/toolbar_widget.dart';
 import '../widgets/search_bar_widget.dart';
+import '../widgets/global_search_widget.dart';
 import '../constants.dart';
 
 /// Main Scrib Desktop screen - the whole app in one window
@@ -35,6 +36,7 @@ class _MainScreenState extends State<MainScreen> {
     // Select only the specific fields MainScreen needs — avoids rebuilding
     // the entire screen (menu bar, toolbar, etc.) on every content debounce.
     final showSearch = context.select<EditorProvider, bool>((e) => e.showSearch);
+    final showGlobalSearch = context.select<EditorProvider, bool>((e) => e.showGlobalSearch);
     // activeTabIndex: triggers rebuild when tabs open/close (needed for editor rerender)
     context.select<EditorProvider, int>((e) => e.activeTabIndex);
     final activeMode = context.select<EditorProvider, EditorMode?>((e) => e.activeTab?.mode);
@@ -74,6 +76,7 @@ class _MainScreenState extends State<MainScreen> {
                       onRenameTab: (index, newName) => _renameTab(context, index, newName),
                     ),
                     const Divider(height: 1),
+                    if (showGlobalSearch) const GlobalSearchPanel(),
                     if (showSearch)
                       ScribSearchBar(
                         quillController: _editorKey.currentState?.quillController,
@@ -149,8 +152,22 @@ class _MainScreenState extends State<MainScreen> {
       const SingleActivator(LogicalKeyboardKey.keyS, control: true): () => _saveFile(context),
       const SingleActivator(LogicalKeyboardKey.keyS, control: true, shift: true): () => _saveFileAs(context),
       const SingleActivator(LogicalKeyboardKey.keyW, control: true): () => _closeCurrentTab(context),
-      const SingleActivator(LogicalKeyboardKey.keyF, control: true): () => editor.toggleSearch(),
-      const SingleActivator(LogicalKeyboardKey.keyH, control: true): () => editor.showSearchBar(),
+      // Ctrl+F = Find only, Ctrl+H = Find & Replace (Notepad/WordPad standard)
+      const SingleActivator(LogicalKeyboardKey.keyF, control: true): () => editor.openFind(),
+      const SingleActivator(LogicalKeyboardKey.keyH, control: true): () => editor.openFindReplace(),
+      // Ctrl+Shift+F = Search all open tabs
+      const SingleActivator(LogicalKeyboardKey.keyF, control: true, shift: true): () => editor.toggleGlobalSearch(),
+      // Ctrl+Y = Redo (Windows standard)
+      const SingleActivator(LogicalKeyboardKey.keyY, control: true): () {
+        final tab = editor.activeTab;
+        if (tab == null) return;
+        final quillCtrl = _editorKey.currentState?.quillController;
+        if (tab.mode == EditorMode.richText && quillCtrl != null) {
+          quillCtrl.redo();
+        } else {
+          tab.undoController.redo();
+        }
+      },
       const SingleActivator(LogicalKeyboardKey.keyE, control: true): () => _toggleEncryption(context),
       const SingleActivator(LogicalKeyboardKey.tab, control: true): () => _nextTab(context),
       const SingleActivator(LogicalKeyboardKey.tab, control: true, shift: true): () => _prevTab(context),
@@ -159,7 +176,11 @@ class _MainScreenState extends State<MainScreen> {
       const SingleActivator(LogicalKeyboardKey.minus, control: true): () => _zoomOut(context),
       const SingleActivator(LogicalKeyboardKey.digit0, control: true): () => _resetZoom(context),
       const SingleActivator(LogicalKeyboardKey.escape): () {
-        if (editor.showSearch) editor.toggleSearch();
+        if (editor.showGlobalSearch) {
+          editor.toggleGlobalSearch();
+        } else if (editor.showSearch) {
+          editor.closeSearch();
+        }
       },
     };
   }
@@ -327,8 +348,18 @@ class _MainScreenState extends State<MainScreen> {
             const Divider(),
             MenuItemButton(
               shortcut: const SingleActivator(LogicalKeyboardKey.keyF, control: true),
-              onPressed: () => editor.toggleSearch(),
-              child: const Text('Find & Replace'),
+              onPressed: () => editor.openFind(),
+              child: const Text('Find...'),
+            ),
+            MenuItemButton(
+              shortcut: const SingleActivator(LogicalKeyboardKey.keyH, control: true),
+              onPressed: () => editor.openFindReplace(),
+              child: const Text('Find & Replace...'),
+            ),
+            MenuItemButton(
+              shortcut: const SingleActivator(LogicalKeyboardKey.keyF, control: true, shift: true),
+              onPressed: () => editor.toggleGlobalSearch(),
+              child: const Text('Search All Tabs...'),
             ),
           ],
           child: const Text('Edit'),
@@ -337,17 +368,18 @@ class _MainScreenState extends State<MainScreen> {
           menuChildren: [
             MenuItemButton(
               shortcut: const SingleActivator(LogicalKeyboardKey.equal, control: true),
-              onPressed: () => _zoomIn(context),
+              // Disabled in rich text mode — use the formatting toolbar instead
+              onPressed: activeMode != EditorMode.richText ? () => _zoomIn(context) : null,
               child: const Text('Increase Text Size'),
             ),
             MenuItemButton(
               shortcut: const SingleActivator(LogicalKeyboardKey.minus, control: true),
-              onPressed: () => _zoomOut(context),
+              onPressed: activeMode != EditorMode.richText ? () => _zoomOut(context) : null,
               child: const Text('Decrease Text Size'),
             ),
             MenuItemButton(
               shortcut: const SingleActivator(LogicalKeyboardKey.digit0, control: true),
-              onPressed: () => _resetZoom(context),
+              onPressed: activeMode != EditorMode.richText ? () => _resetZoom(context) : null,
               child: const Text('Default Text Size'),
             ),
             const Divider(),

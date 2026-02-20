@@ -30,6 +30,7 @@ class ScribToolbar extends StatelessWidget {
     final colorIndex = context.select<EditorProvider, int?>((e) => e.activeTab?.colorIndex);
     final hasTab = context.select<EditorProvider, bool>((e) => e.activeTab != null);
     final isSearchOpen = context.select<EditorProvider, bool>((e) => e.showSearch);
+    final isGlobalSearchOpen = context.select<EditorProvider, bool>((e) => e.showGlobalSearch);
     // Per-tab font/size — only shown in plain text mode
     final tabFontFamily = context.select<EditorProvider, String>((e) => e.activeTab?.tabFontFamily ?? 'Calibri');
     final tabFontSize = context.select<EditorProvider, double>((e) => e.activeTab?.tabFontSize ?? 14.0);
@@ -87,13 +88,21 @@ class ScribToolbar extends StatelessWidget {
             isDark: isDark,
             activeColor: isEncrypted ? const Color(0xFFFBBF24) : null,
           ),
-          // Find
+          // Find (current tab) — Ctrl+F
           _ToolbarButton(
             icon: Icons.search,
-            tooltip: 'Find & Replace (Ctrl+F)',
-            onPressed: () => editor.toggleSearch(),
+            tooltip: 'Find (Ctrl+F)  ·  Find & Replace (Ctrl+H)',
+            onPressed: () => editor.openFind(),
             isDark: isDark,
             activeColor: isSearchOpen ? colorScheme.primary : null,
+          ),
+          // Search all tabs — Ctrl+Shift+F
+          _ToolbarButton(
+            icon: Icons.manage_search,
+            tooltip: 'Search All Tabs (Ctrl+Shift+F)',
+            onPressed: () => editor.toggleGlobalSearch(),
+            isDark: isDark,
+            activeColor: isGlobalSearchOpen ? colorScheme.primary : null,
           ),
 
           _toolbarDivider(isDark),

@@ -91,6 +91,9 @@ class EditorProvider extends ChangeNotifier {
 
   // Search state
   bool _showSearch = false;
+  bool _showReplace = false;
+  bool _showGlobalSearch = false;
+  String _pendingFindQuery = ''; // pre-populated when navigating from global search
 
   // Debounce timer for content changes
   Timer? _contentDebounce;
@@ -149,6 +152,9 @@ class EditorProvider extends ChangeNotifier {
       ? _tabs[_activeTabIndex]
       : null;
   bool get showSearch => _showSearch;
+  bool get showReplace => _showReplace;
+  bool get showGlobalSearch => _showGlobalSearch;
+  String get pendingFindQuery => _pendingFindQuery;
   bool get hasUnsavedChanges => _tabs.any((tab) => tab.isDirty);
 
   // Tab management
@@ -559,15 +565,94 @@ class EditorProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // Search
-  void toggleSearch() {
-    _showSearch = !_showSearch;
+  // ── Per-tab Find / Find & Replace ──────────────────────────────────────────
+
+  /// Ctrl+F — open Find bar (no replace row).
+  void openFind() {
+    _showSearch = true;
+    _showReplace = false;
+    _showGlobalSearch = false;
     notifyListeners();
   }
 
-  void showSearchBar() {
+  /// Ctrl+H — open Find & Replace bar.
+  void openFindReplace() {
     _showSearch = true;
+    _showReplace = true;
+    _showGlobalSearch = false;
     notifyListeners();
+  }
+
+  /// Toggle replace row while find bar is already open.
+  void toggleReplace() {
+    if (!_showSearch) return;
+    _showReplace = !_showReplace;
+    notifyListeners();
+  }
+
+  void closeSearch() {
+    _showSearch = false;
+    _showReplace = false;
+    _pendingFindQuery = '';
+    notifyListeners();
+  }
+
+  /// Called from Escape or close button.
+  void toggleSearch() {
+    if (_showSearch) {
+      closeSearch();
+    } else {
+      openFind();
+    }
+  }
+
+  /// Navigate from global search: pre-populate find bar and switch tab.
+  void openFindWithQuery(String query) {
+    _pendingFindQuery = query;
+    _showSearch = true;
+    _showReplace = false;
+    _showGlobalSearch = false;
+    notifyListeners();
+  }
+
+  /// Called by ScribSearchBar in initState after it reads the pending query.
+  void clearPendingFindQuery() {
+    _pendingFindQuery = '';
+  }
+
+  // ── Global search (across all open tabs) ────────────────────────────────────
+
+  void toggleGlobalSearch() {
+    _showGlobalSearch = !_showGlobalSearch;
+    if (_showGlobalSearch) {
+      // Close per-tab find bar when global search opens.
+      _showSearch = false;
+      _showReplace = false;
+    }
+    notifyListeners();
+  }
+
+  /// Search all open tabs. Returns results sorted by match count (desc).
+  List<({int tabIndex, String tabName, int matchCount})> searchAllTabs(String query) {
+    if (query.trim().isEmpty) return [];
+    final q = query.toLowerCase();
+    final results = <({int tabIndex, String tabName, int matchCount})>[];
+    for (int i = 0; i < _tabs.length; i++) {
+      final tab = _tabs[i];
+      final text = tab.mode == EditorMode.richText
+          ? _extractPlainTextFromDelta(tab.deltaJson)
+          : tab.controller.text;
+      int count = 0;
+      int idx = 0;
+      final lower = text.toLowerCase();
+      while ((idx = lower.indexOf(q, idx)) != -1) {
+        count++;
+        idx += q.length;
+      }
+      if (count > 0) results.add((tabIndex: i, tabName: tab.displayName, matchCount: count));
+    }
+    results.sort((a, b) => b.matchCount.compareTo(a.matchCount));
+    return results;
   }
 
   /// Called when editor content changes - debounced to avoid excessive rebuilds.
