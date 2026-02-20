@@ -192,7 +192,13 @@ class EditorProvider extends ChangeNotifier {
     if (index < 0 || index >= _tabs.length) return false;
 
     final tab = _tabs[index];
-    tab.dispose();
+
+    // Clear sensitive data immediately — never defer this
+    tab.password = null;
+    tab.savedContent = '';
+    tab.deltaJson = '';
+    tab.savedDeltaJson = '';
+
     _tabs.removeAt(index);
 
     if (_tabs.isEmpty) {
@@ -208,6 +214,16 @@ class EditorProvider extends ChangeNotifier {
 
     _cachedActiveText = null;
     notifyListeners();
+
+    // Defer widget controller disposal to after the UI renders the close.
+    // TextEditingController.dispose() fires notifyListeners() internally, which
+    // causes a double-rebuild stutter if called synchronously before the widget
+    // tree rebuilds from the notifyListeners() above.
+    Future.microtask(() {
+      tab.controller.dispose();
+      tab.undoController.dispose();
+    });
+
     return true;
   }
 

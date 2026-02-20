@@ -758,7 +758,13 @@ class _MainScreenState extends State<MainScreen> {
     final tab = editor.tabs[index];
 
     if (!tab.isDirty) {
-      // Fast path: no save needed, close immediately
+      // Fast path: clean — close immediately
+      editor.closeTab(index);
+      return;
+    }
+
+    if (tab.filePath == null) {
+      // Fast path: dirty but never saved to disk — nothing to lose, discard silently
       editor.closeTab(index);
       return;
     }
