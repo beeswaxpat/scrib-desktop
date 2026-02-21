@@ -21,7 +21,7 @@ Built by [Beeswax Pat](https://scrib.cfd/) with [Claude Code](https://claude.ai/
 
 ---
 
-![Scrib Desktop — dark theme with rich text toolbar and tab bar](screenshot.png)
+![Scrib Desktop — multi-tab, rich text, encrypted. Three tabs open with encryption active.](screenshot.png)
 
 ---
 
