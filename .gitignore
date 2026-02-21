@@ -53,6 +53,9 @@ CLAUDE.md
 # Scrib Desktop — obfuscation split debug info (release build artifact)
 build/debug-info/
 
+# Release zip — upload to GitHub Releases, not committed to repo
+*.zip
+
 # Signing / secrets — never commit these
 key.properties
 *.keystore
