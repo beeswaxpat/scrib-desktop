@@ -417,13 +417,9 @@ class EditorProvider extends ChangeNotifier {
       tab.isEncrypted = true;
       tab.password = password;
     } else {
-      final ext = _fileService.getExtension(path);
-      if (ext == '.rtf' && tab.mode == EditorMode.richText) {
-        // RTF save handled by caller (main_screen) via RtfService
-        await _fileService.writeTxtFile(path, content);
-      } else {
-        await _fileService.writeTxtFile(path, content);
-      }
+      // RTF saves are handled by the caller (main_screen via RtfService) before
+      // this method is called, so plain writeTxtFile is correct for all remaining cases.
+      await _fileService.writeTxtFile(path, content);
       tab.isEncrypted = false;
       tab.password = null;
     }

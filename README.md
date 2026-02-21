@@ -13,7 +13,8 @@ Built by [Beeswax Pat](https://scrib.cfd/) &middot; Copyright &copy; 2026 Beeswa
 - **`.scrb` file format** — Scrib's own encrypted container; open only with the right password
 - **RTF import/export** — open `.rtf` files from Word or LibreOffice; export back
 - **Multi-tab editing** — tabs with per-tab accent colors, inline rename, middle-click close
-- **Find & Replace** — works in both plain text and rich text mode
+- **Find & Replace** — Ctrl+F (find), Ctrl+H (replace), works in plain text and rich text
+- **Search All Tabs** — Ctrl+Shift+F searches across every open tab; click a result to jump to it
 - **Auto-save** — silently saves all dirty tabs on a configurable timer (View > Auto-Save)
 - **Rich text formatting** — bold, italic, underline, strikethrough, font family/size, text/highlight colors, headings, bullet & numbered lists, block quotes, alignment, indent
 - **Line numbers** — optional gutter for plain text mode
@@ -87,7 +88,8 @@ lib/
     formatting_toolbar_widget.dart  # Rich text formatting toolbar
     toolbar_widget.dart             # Quick-action toolbar
     tab_bar_widget.dart             # Tab bar with rename and color support
-    search_bar_widget.dart          # Find & Replace bar
+    search_bar_widget.dart          # Per-tab Find & Replace bar
+    global_search_widget.dart       # Search-all-tabs panel
     status_bar_widget.dart          # Word/char/line count, encryption status
   theme/
     desktop_theme.dart              # Dark and light Material 3 themes

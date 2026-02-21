@@ -133,7 +133,7 @@ class ScribEditorState extends State<ScribEditor> {
           border: borderColor != null ? Border.all(color: borderColor, width: 2) : null,
         ),
         child: mode == EditorMode.richText
-            ? _buildRichTextEditor(tab, tabFontFamily, tabFontSize, isDark)
+            ? _buildRichTextEditor(tab, isDark)
             : _buildPlainTextEditor(tab, editor, tabFontFamily, tabFontSize, showLineNumbers, isDark),
       ),
     );
@@ -185,12 +185,7 @@ class ScribEditorState extends State<ScribEditor> {
     );
   }
 
-  Widget _buildRichTextEditor(
-    EditorTab tab,
-    String fontFamily,
-    double fontSize,
-    bool isDark,
-  ) {
+  Widget _buildRichTextEditor(EditorTab tab, bool isDark) {
     if (_quillController == null) {
       return const Center(child: CircularProgressIndicator());
     }

@@ -17,12 +17,6 @@ dependencies:
   # State management
   provider: ^6.1.2
 
-  # Unique IDs
-  uuid: ^4.5.1
-
-  # Date formatting
-  intl: ^0.20.2
-
   # File system
   path_provider: ^2.1.5
   file_picker: ^8.1.6
@@ -37,7 +31,6 @@ dependencies:
   # Desktop-specific
   window_manager: ^0.4.2
   desktop_drop: ^0.4.4
-  url_launcher: ^6.2.0
 
 dev_dependencies:
   flutter_test:

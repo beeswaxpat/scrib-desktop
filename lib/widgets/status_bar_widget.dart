@@ -12,7 +12,6 @@ class ScribStatusBar extends StatelessWidget {
     final editor = context.watch<EditorProvider>();
     final tab = editor.activeTab;
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final colorScheme = Theme.of(context).colorScheme;
 
     return Container(
       height: 28,
