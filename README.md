@@ -8,9 +8,20 @@
 
 # Scrib Desktop
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Platform: Windows](https://img.shields.io/badge/Platform-Windows_10+-0078D6?logo=windows&logoColor=white)](https://github.com/beeswaxpat/scrib-desktop/releases)
+[![Release](https://img.shields.io/github/v/release/beeswaxpat/scrib-desktop?color=green)](https://github.com/beeswaxpat/scrib-desktop/releases)
+[![Built with Flutter](https://img.shields.io/badge/Built_with-Flutter-02569B?logo=flutter&logoColor=white)](https://flutter.dev/)
+
 The encrypted desktop editor. Plain text, rich text, and `.scrb` — fully offline, zero tracking.
 
 Built by [Beeswax Pat](https://scrib.cfd/) with [Claude Code](https://claude.ai/claude-code) · Licensed under the [GNU GPL v3](LICENSE)
+
+**[Download Latest Release](https://github.com/beeswaxpat/scrib-desktop/releases)** · **[Blog Post](https://scrib.cfd/blog/scrib-desktop-open-source)** · **[Website](https://scrib.cfd/)**
+
+---
+
+![Scrib Desktop — dark theme with rich text toolbar and tab bar](screenshot.png)
 
 ---
 
