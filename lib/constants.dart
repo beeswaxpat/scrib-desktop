@@ -7,8 +7,7 @@ const String appTagline = 'No tracking. No cloud. Just notes.';
 
 /// .scrb file format magic bytes
 const List<int> scrbMagic = [0x53, 0x43, 0x52, 0x42]; // "SCRB"
-const int scrbVersionV1 = 0x01; // Legacy: AES-256-CBC, no HMAC, 10k PBKDF2
-const int scrbVersionV2 = 0x02; // Current: AES-256-CBC + HMAC-SHA256 (Encrypt-then-MAC), 100k PBKDF2
+const int scrbVersionV2 = 0x02; // AES-256-CBC + HMAC-SHA256 (Encrypt-then-MAC), 100k PBKDF2
 const int scrbCurrentVersion = scrbVersionV2;
 
 /// Note colors palette - 16 research-backed colors (shared with mobile)

@@ -99,9 +99,7 @@ class EditorProvider extends ChangeNotifier {
   Timer? _contentDebounce;
   static const _debounceDuration = Duration(milliseconds: 150);
 
-  // Cached plain text for word/char/line counts.
-  // Invalidated whenever the active content or active tab changes.
-  // This avoids re-parsing Delta JSON 3× per status-bar rebuild in rich text mode.
+  // Cached plain text for word/char/line counts (avoids re-parsing Delta per getter).
   String? _cachedActiveText;
 
   // Auto-save timer — started/restarted whenever the interval setting changes.
@@ -221,10 +219,7 @@ class EditorProvider extends ChangeNotifier {
     _cachedActiveText = null;
     notifyListeners();
 
-    // Defer widget controller disposal to after the UI renders the close.
-    // TextEditingController.dispose() fires notifyListeners() internally, which
-    // causes a double-rebuild stutter if called synchronously before the widget
-    // tree rebuilds from the notifyListeners() above.
+    // Defer disposal — synchronous dispose fires notifyListeners() and stutters.
     Future.microtask(() {
       tab.controller.dispose();
       tab.undoController.dispose();
@@ -651,9 +646,7 @@ class EditorProvider extends ChangeNotifier {
     return results;
   }
 
-  /// Called when editor content changes - debounced to avoid excessive rebuilds.
-  /// Invalidates the cached plain-text so word/char/line counts recompute once
-  /// per notification cycle (not once per getter call).
+  /// Debounced content-change handler. Invalidates cached text and notifies.
   void onContentChanged() {
     _contentDebounce?.cancel();
     _contentDebounce = Timer(_debounceDuration, () {
@@ -662,9 +655,6 @@ class EditorProvider extends ChangeNotifier {
     });
   }
 
-  // Word/character count for active tab.
-  // _activeText is cached per notification cycle — computed at most once per
-  // 300 ms debounce, even though wordCount/charCount/lineCount each call it.
   String get _activeText {
     if (_cachedActiveText != null) return _cachedActiveText!;
     final tab = activeTab;

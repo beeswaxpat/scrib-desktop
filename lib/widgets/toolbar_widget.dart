@@ -23,7 +23,6 @@ class ScribToolbar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Targeted selects — toolbar only rebuilds when these specific values change
     final isDirty = context.select<EditorProvider, bool>((e) => e.activeTab?.isDirty ?? false);
     final isEncrypted = context.select<EditorProvider, bool>((e) => e.activeTab?.isEncrypted ?? false);
     final mode = context.select<EditorProvider, EditorMode?>((e) => e.activeTab?.mode);
@@ -31,12 +30,10 @@ class ScribToolbar extends StatelessWidget {
     final hasTab = context.select<EditorProvider, bool>((e) => e.activeTab != null);
     final isSearchOpen = context.select<EditorProvider, bool>((e) => e.showSearch);
     final isGlobalSearchOpen = context.select<EditorProvider, bool>((e) => e.showGlobalSearch);
-    // Per-tab font/size — only shown in plain text mode
     final tabFontFamily = context.select<EditorProvider, String>((e) => e.activeTab?.tabFontFamily ?? 'Calibri');
     final tabFontSize = context.select<EditorProvider, double>((e) => e.activeTab?.tabFontSize ?? 14.0);
 
-    final editor = context.read<EditorProvider>(); // for method calls only
-    // settings is read-only here (only for setThemeMode); no rebuild needed on settings changes
+    final editor = context.read<EditorProvider>();
     final settings = context.read<SettingsService>();
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final colorScheme = Theme.of(context).colorScheme;
@@ -56,21 +53,18 @@ class ScribToolbar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // Save
           _ToolbarButton(
             icon: Icons.save,
             tooltip: 'Save (Ctrl+S)',
             onPressed: isDirty ? onSaveFile : null,
             isDark: isDark,
           ),
-          // New file
           _ToolbarButton(
             icon: Icons.note_add_outlined,
             tooltip: 'New (Ctrl+N)',
             onPressed: () => editor.addNewTab(),
             isDark: isDark,
           ),
-          // Open file
           _ToolbarButton(
             icon: Icons.folder_open_outlined,
             tooltip: 'Open (Ctrl+O)',
@@ -80,7 +74,6 @@ class ScribToolbar extends StatelessWidget {
 
           _toolbarDivider(isDark),
 
-          // Encrypt toggle — gold when locked
           _ToolbarButton(
             icon: isEncrypted ? Icons.lock : Icons.lock_open,
             tooltip: isEncrypted ? 'Decrypt (Ctrl+E)' : 'Encrypt (Ctrl+E)',
@@ -96,7 +89,6 @@ class ScribToolbar extends StatelessWidget {
             isDark: isDark,
             activeColor: isSearchOpen ? colorScheme.primary : null,
           ),
-          // Search all tabs — Ctrl+Shift+F
           _ToolbarButton(
             icon: Icons.manage_search,
             tooltip: 'Search All Tabs (Ctrl+Shift+F)',
@@ -107,7 +99,6 @@ class ScribToolbar extends StatelessWidget {
 
           _toolbarDivider(isDark),
 
-          // Mode toggle - shows current mode, click to switch
           Tooltip(
             message: mode == EditorMode.richText
                 ? 'Switch to Plain Text (Ctrl+M)'
@@ -160,11 +151,9 @@ class ScribToolbar extends StatelessWidget {
             ),
           ),
 
-          // Font/size controls — only shown in plain text mode
           if (!isRichText) ...[
             _toolbarDivider(isDark),
 
-            // Font family dropdown
             SizedBox(
               width: 130,
               height: 26,
@@ -192,7 +181,6 @@ class ScribToolbar extends StatelessWidget {
 
             const SizedBox(width: 4),
 
-            // Font size controls: minus, display, plus
             _ToolbarButton(
               icon: Icons.remove,
               tooltip: 'Decrease Text Size (Ctrl+-)',
@@ -201,12 +189,30 @@ class ScribToolbar extends StatelessWidget {
                   : null,
               isDark: isDark,
             ),
-            Container(
-              width: 32,
-              alignment: Alignment.center,
-              child: Text(
-                '${tabFontSize.round()}',
-                style: TextStyle(fontSize: 12, color: textColor),
+            Tooltip(
+              message: 'Click to set custom size',
+              waitDuration: const Duration(milliseconds: 500),
+              child: InkWell(
+                onTap: hasTab ? () async {
+                  final size = await _showFontSizeInput(context, tabFontSize, isDark);
+                  if (size != null) editor.setTabFontSize(size);
+                } : null,
+                borderRadius: BorderRadius.circular(4),
+                child: Container(
+                  width: 34,
+                  height: 26,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(
+                      color: isDark ? const Color(0xFF3A3A3A) : const Color(0xFFCCCCCC),
+                    ),
+                  ),
+                  child: Text(
+                    '${tabFontSize.round()}',
+                    style: TextStyle(fontSize: 11, color: textColor),
+                  ),
+                ),
               ),
             ),
             _ToolbarButton(
@@ -221,7 +227,6 @@ class ScribToolbar extends StatelessWidget {
 
           const Spacer(),
 
-          // Per-tab color selector
           ...List.generate(accentColors.length, (i) {
             final isSelected = colorIndex == i;
             return Padding(
@@ -246,7 +251,6 @@ class ScribToolbar extends StatelessWidget {
 
           const SizedBox(width: 8),
 
-          // Theme toggle
           _ToolbarButton(
             icon: isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
             tooltip: isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode',
@@ -267,6 +271,48 @@ class ScribToolbar extends StatelessWidget {
       ),
     );
   }
+}
+
+Future<double?> _showFontSizeInput(BuildContext context, double current, bool isDark) async {
+  final controller = TextEditingController(text: '${current.round()}');
+  final result = await showDialog<double>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      title: const Text('Set Text Size'),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        keyboardType: TextInputType.number,
+        decoration: const InputDecoration(
+          labelText: 'Font size (6–144)',
+          border: OutlineInputBorder(),
+          enabledBorder: OutlineInputBorder(),
+          focusedBorder: OutlineInputBorder(),
+        ),
+        onSubmitted: (value) {
+          final parsed = double.tryParse(value);
+          if (parsed != null) {
+            Navigator.pop(ctx, parsed.clamp(6, 144));
+          }
+        },
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () {
+            final parsed = double.tryParse(controller.text);
+            if (parsed != null) {
+              Navigator.pop(ctx, parsed.clamp(6, 144));
+            }
+          },
+          child: const Text('Apply'),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+  return result;
 }
 
 class _ToolbarButton extends StatelessWidget {

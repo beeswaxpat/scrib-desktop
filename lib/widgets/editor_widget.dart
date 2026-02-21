@@ -18,7 +18,6 @@ class ScribEditorState extends State<ScribEditor> {
   final _editorScrollController = ScrollController();
   final _lineNumberScrollController = ScrollController();
 
-  // Rich text state
   QuillController? _quillController;
   final _quillFocusNode = FocusNode();
   final _quillScrollController = ScrollController();
@@ -62,7 +61,6 @@ class ScribEditorState extends State<ScribEditor> {
     _lastTabIndex = tabIndex;
     _lastMode = tab.mode;
 
-    // Detach and defer disposal of old controller to avoid blocking the frame
     final old = _quillController;
     if (old != null) {
       old.removeListener(_onQuillChanged);
@@ -101,8 +99,6 @@ class ScribEditorState extends State<ScribEditor> {
 
   @override
   Widget build(BuildContext context) {
-    // Targeted selects — only rebuild when these specific values change.
-    // activeTabIndex + mode cover all tab-switch and mode-switch scenarios.
     final tabIndex = context.select<EditorProvider, int>((e) => e.activeTabIndex);
     final mode = context.select<EditorProvider, EditorMode?>((e) => e.activeTab?.mode);
     final colorIndex = context.select<EditorProvider, int?>((e) => e.activeTab?.colorIndex);
@@ -118,19 +114,24 @@ class ScribEditorState extends State<ScribEditor> {
       return _buildEmptyState(context);
     }
 
-    // Rebuild QuillController if needed
     _ensureQuillController(tab, tabIndex);
 
-    // Color border when tab has a per-tab color assigned
     final borderColor = colorIndex != null
         ? accentColors[colorIndex.clamp(0, accentColors.length - 1)]
+            .withValues(alpha: 0.45)
         : null;
 
     return RepaintBoundary(
       child: Container(
         decoration: BoxDecoration(
           color: isDark ? const Color(0xFF0D0D0D) : Colors.white,
-          border: borderColor != null ? Border.all(color: borderColor, width: 2) : null,
+          border: borderColor != null
+              ? Border(
+                  left: BorderSide(color: borderColor, width: 2),
+                  right: BorderSide(color: borderColor, width: 2),
+                  bottom: BorderSide(color: borderColor, width: 2),
+                )
+              : null,
         ),
         child: mode == EditorMode.richText
             ? _buildRichTextEditor(tab, isDark)
@@ -190,12 +191,8 @@ class ScribEditorState extends State<ScribEditor> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    // Rich text paragraph base style uses a fixed default — NOT tabFontFamily/tabFontSize.
-    // In rich text mode, font and size are controlled exclusively through the formatting
-    // toolbar (inline Quill Delta attributes stored in the document). Passing tabFontFamily/
-    // tabFontSize here would cause the QuillEditor to rebuild and shift rendering every time
-    // the user triggered View > Text Size or switched plain-text font settings, interfering
-    // with any inline formatting they explicitly set via the formatting toolbar.
+    // Fixed defaults — rich text font/size is controlled via inline Delta attributes,
+    // not the per-tab plain-text settings.
     const richTextDefaultFontFamily = 'Calibri';
     const richTextDefaultFontSize = 14.0;
 

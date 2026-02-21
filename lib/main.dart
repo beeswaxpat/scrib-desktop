@@ -158,9 +158,7 @@ class _ScribDesktopAppState extends State<ScribDesktopApp> with WindowListener {
       }
     }
 
-    // Cancel all timers and listeners before destroy.
-    // EditorProvider holds a Timer.periodic (_autoSaveTimer) that keeps the
-    // Dart event loop alive — disposing it here lets the process exit instantly.
+    // Dispose timers/listeners before destroy so the process exits cleanly.
     _windowSaveDebounce?.cancel();
     widget.settingsService.removeListener(_onSettingsChanged);
     widget.editorProvider.removeListener(_onEditorChanged);

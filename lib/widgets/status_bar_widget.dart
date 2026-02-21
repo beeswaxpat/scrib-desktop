@@ -26,33 +26,16 @@ class ScribStatusBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // Word count
-          _StatusItem(
-            text: 'Words: ${editor.wordCount}',
-            isDark: isDark,
-          ),
+          _StatusItem(text: 'Words: ${editor.wordCount}', isDark: isDark),
           _statusDivider(isDark),
-          // Character count
-          _StatusItem(
-            text: 'Characters: ${editor.charCount}',
-            isDark: isDark,
-          ),
+          _StatusItem(text: 'Characters: ${editor.charCount}', isDark: isDark),
           _statusDivider(isDark),
-          // Line count
-          _StatusItem(
-            text: 'Lines: ${editor.lineCount}',
-            isDark: isDark,
-          ),
+          _StatusItem(text: 'Lines: ${editor.lineCount}', isDark: isDark),
           _statusDivider(isDark),
-          // Encoding
-          _StatusItem(
-            text: 'UTF-8',
-            isDark: isDark,
-          ),
+          _StatusItem(text: 'UTF-8', isDark: isDark),
 
           const Spacer(),
 
-          // Editor mode
           if (tab != null) ...[
             _StatusItem(
               text: tab.mode == EditorMode.richText ? 'Rich Text' : 'Plain Text',

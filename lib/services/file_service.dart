@@ -7,9 +7,7 @@ import 'package:flutter/foundation.dart' show compute;
 import 'package:pointycastle/export.dart' as pc;
 import '../constants.dart';
 
-// ── Isolate-safe top-level functions ────────────────────────────────────────
-// These run in a background isolate via compute() so PBKDF2's 100k iterations
-// don't freeze the UI.
+// Top-level functions run in a background isolate via compute().
 
 Uint8List _pbkdf2(String password, Uint8List salt, int iterations, int keyLen) {
   final pbkdf2 = pc.PBKDF2KeyDerivator(pc.HMac(pc.SHA256Digest(), 64));
@@ -112,43 +110,14 @@ String? _doDecrypt(Map<String, dynamic> p) {
       _zero(encKey);
       _zero(macKey);
     }
-  } else if (version == 0x01) {
-    if (bytes.length < 54) return null;
-    final iv   = Uint8List.fromList(bytes.sublist(5, 21));
-    final salt = Uint8List.fromList(bytes.sublist(21, 53));
-    final ct   = Uint8List.fromList(bytes.sublist(53));
-    if (ct.isEmpty) return null;
-
-    final key = _pbkdf2(password, salt, 10000, 32);
-    try {
-      final d = encrypt.Encrypter(
-        encrypt.AES(encrypt.Key(key), mode: encrypt.AESMode.cbc),
-      );
-      return d.decrypt(encrypt.Encrypted(ct), iv: encrypt.IV(iv));
-    } catch (_) {
-      return null;
-    } finally {
-      _zero(key);
-    }
   }
   return null;
 }
 
-// ── FileService ─────────────────────────────────────────────────────────────
-
-/// Handles .txt and .scrb file I/O with encryption
+/// Handles .txt, .rtf, and .scrb file I/O.
 ///
-/// .scrb v2 format (Encrypt-then-MAC):
-///   [0:4]   SCRB magic
-///   [4:5]   version (0x02)
-///   [5:21]  IV (16 bytes)
-///   [21:53] salt (32 bytes)
-///   [53:85] HMAC-SHA256 (32 bytes) over (version || IV || salt || ciphertext)
-///   [85:]   ciphertext (AES-256-CBC with PKCS7 padding)
-///
-/// Key derivation: PBKDF2-SHA256, 100,000 iterations, 64-byte output
-///   bytes 0-31: encryption key
-///   bytes 32-63: MAC key
+/// .scrb v2 format: [SCRB 4B][ver 1B][IV 16B][salt 32B][HMAC 32B][ciphertext]
+/// Key derivation: PBKDF2-SHA256, 100k iterations, 64-byte output (32 enc + 32 mac).
 class FileService {
   /// Read a plaintext .txt file
   Future<String> readTxtFile(String path) async =>
@@ -166,9 +135,7 @@ class FileService {
     }
   }
 
-  /// Read and decrypt a .scrb file (supports v1 and v2).
-  /// Returns null if password is wrong or file is corrupt.
-  /// PBKDF2 runs in a background isolate so the UI stays responsive.
+  /// Read and decrypt a .scrb v2 file. Returns null on wrong password.
   Future<String?> readScrbFile(String path, String password) async {
     final bytes = await File(path).readAsBytes();
     if (bytes.length < 5) return null;
@@ -179,11 +146,9 @@ class FileService {
     return compute(_doDecrypt, {'bytes': bytes, 'password': password});
   }
 
-  /// Encrypt content and write a .scrb v2 file (atomic).
-  /// PBKDF2 + AES run in a background isolate so the UI stays responsive.
+  /// Encrypt and write a .scrb v2 file (atomic write).
   Future<void> writeScrbFile(String path, String content, String password) async {
-    // Guard: AES-CBC + PKCS7 can misbehave with empty strings on some
-    // encrypt-package versions.  Use a single newline as minimum content.
+    // AES-CBC + PKCS7 can misbehave with empty strings; use a newline as minimum.
     final safe = content.isEmpty ? '\n' : content;
 
     final rng  = Random.secure();
@@ -213,9 +178,7 @@ class FileService {
     }
   }
 
-  /// Read a .rtf file as raw string.
-  /// Tries UTF-8 first; falls back to Latin-1 for files from apps like Word
-  /// that write raw Windows-1252 bytes instead of the RTF \'xx escape.
+  /// Read a .rtf file. Tries UTF-8; falls back to Latin-1 for Word-style files.
   Future<String> readRtfFile(String path) async {
     final bytes = await File(path).readAsBytes();
     try {

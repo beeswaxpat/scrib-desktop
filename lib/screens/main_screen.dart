@@ -33,14 +33,10 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Select only the specific fields MainScreen needs — avoids rebuilding
-    // the entire screen (menu bar, toolbar, etc.) on every content debounce.
     final showSearch = context.select<EditorProvider, bool>((e) => e.showSearch);
     final showGlobalSearch = context.select<EditorProvider, bool>((e) => e.showGlobalSearch);
-    // activeTabIndex: triggers rebuild when tabs open/close (needed for editor rerender)
     context.select<EditorProvider, int>((e) => e.activeTabIndex);
     final activeMode = context.select<EditorProvider, EditorMode?>((e) => e.activeTab?.mode);
-    // isEncrypted: triggers rebuild so the toolbar's lock icon stays in sync
     context.select<EditorProvider, bool>((e) => e.activeTab?.isEncrypted ?? false);
     final colorScheme = Theme.of(context).colorScheme;
 
@@ -85,7 +81,6 @@ class _MainScreenState extends State<MainScreen> {
                       Builder(builder: (context) {
                         final quillCtrl = _editorKey.currentState?.quillController;
                         if (quillCtrl == null) {
-                          // Controller not ready yet — schedule a rebuild after the editor creates it
                           WidgetsBinding.instance.addPostFrameCallback((_) {
                             if (mounted) setState(() {});
                           });
@@ -118,7 +113,6 @@ class _MainScreenState extends State<MainScreen> {
                       ),
                     ),
                   ),
-                // Encryption/decryption progress overlay
                 if (_processingMessage != null)
                   Container(
                     color: Colors.black54,
@@ -152,12 +146,9 @@ class _MainScreenState extends State<MainScreen> {
       const SingleActivator(LogicalKeyboardKey.keyS, control: true): () => _saveFile(context),
       const SingleActivator(LogicalKeyboardKey.keyS, control: true, shift: true): () => _saveFileAs(context),
       const SingleActivator(LogicalKeyboardKey.keyW, control: true): () => _closeCurrentTab(context),
-      // Ctrl+F = Find only, Ctrl+H = Find & Replace (Notepad/WordPad standard)
       const SingleActivator(LogicalKeyboardKey.keyF, control: true): () => editor.openFind(),
       const SingleActivator(LogicalKeyboardKey.keyH, control: true): () => editor.openFindReplace(),
-      // Ctrl+Shift+F = Search all open tabs
       const SingleActivator(LogicalKeyboardKey.keyF, control: true, shift: true): () => editor.toggleGlobalSearch(),
-      // Ctrl+Y = Redo (Windows standard)
       const SingleActivator(LogicalKeyboardKey.keyY, control: true): () {
         final tab = editor.activeTab;
         if (tab == null) return;
@@ -189,9 +180,7 @@ class _MainScreenState extends State<MainScreen> {
     final editor = context.read<EditorProvider>();
     final themeMode = context.select<SettingsService, int>((s) => s.themeMode);
     final autoSaveOn = context.select<SettingsService, bool>((s) => s.autoSaveInterval > 0);
-    // isEncrypted select keeps the Security submenu label ("Encrypt/Decrypt File") in sync
     final isEncryptedForMenu = context.select<EditorProvider, bool>((e) => e.activeTab?.isEncrypted ?? false);
-    // activeMode triggers menu rebuild on mode changes (needed for Edit menu behavior)
     final activeMode = context.select<EditorProvider, EditorMode?>((e) => e.activeTab?.mode);
     final settings = context.read<SettingsService>();
     final quillCtrl = _editorKey.currentState?.quillController;
@@ -368,7 +357,6 @@ class _MainScreenState extends State<MainScreen> {
           menuChildren: [
             MenuItemButton(
               shortcut: const SingleActivator(LogicalKeyboardKey.equal, control: true),
-              // Disabled in rich text mode — use the formatting toolbar instead
               onPressed: activeMode != EditorMode.richText ? () => _zoomIn(context) : null,
               child: const Text('Increase Text Size'),
             ),
@@ -530,10 +518,8 @@ class _MainScreenState extends State<MainScreen> {
       return;
     }
 
-    // ── Extension mismatch: encryption state changed since last save ──
     final currentPath = tab.filePath!;
     if (tab.isEncrypted && !currentPath.endsWith('.scrb')) {
-      // Was plain/rtf, now encrypted → save to .scrb path
       final newPath = _swapExtension(currentPath, '.scrb');
       if (tab.password == null) {
         final password = await _showSetPasswordDialog(context);
@@ -555,7 +541,6 @@ class _MainScreenState extends State<MainScreen> {
       return;
     }
     if (!tab.isEncrypted && currentPath.endsWith('.scrb')) {
-      // Was encrypted, now decrypted → save to .txt (or .rtf)
       final ext = tab.mode == EditorMode.richText ? '.rtf' : '.txt';
       final newPath = _swapExtension(currentPath, ext);
       try {
@@ -577,7 +562,6 @@ class _MainScreenState extends State<MainScreen> {
       return;
     }
 
-    // ── Normal save (extension matches encryption state) ──
     if (tab.isEncrypted && tab.password == null) {
       final password = await _showSetPasswordDialog(context);
       if (password == null) return;
@@ -660,9 +644,7 @@ class _MainScreenState extends State<MainScreen> {
     );
 
     if (path != null && context.mounted) {
-      // If the tab is already marked encrypted (e.g. user clicked Encrypt before
-      // Save As was called), honour that even if they typed a name without .scrb.
-      // Silently append the extension so the file is properly encrypted on disk.
+      // Ensure .scrb extension if tab is encrypted, even if user omitted it.
       final effectivePath = (tab.isEncrypted && !path.endsWith('.scrb'))
           ? _swapExtension(path, '.scrb')
           : path;
@@ -790,13 +772,11 @@ class _MainScreenState extends State<MainScreen> {
     final tab = editor.tabs[index];
 
     if (!tab.isDirty) {
-      // Fast path: clean — close immediately
       editor.closeTab(index);
       return;
     }
 
     if (tab.filePath == null) {
-      // Fast path: dirty but never saved to disk — nothing to lose, discard silently
       editor.closeTab(index);
       return;
     }
@@ -836,7 +816,7 @@ class _MainScreenState extends State<MainScreen> {
       }
     }
 
-    // Re-lookup index since save/dialog may have shifted tabs
+    // Re-lookup — save/dialog may have shifted tab indices.
     final currentIndex = editor.tabs.indexOf(tab);
     if (currentIndex != -1) editor.closeTab(currentIndex);
   }
@@ -847,18 +827,15 @@ class _MainScreenState extends State<MainScreen> {
     if (tab == null) return;
 
     if (!tab.isEncrypted) {
-      // Encrypting: toggle flag, prompt for password, then save immediately
-      editor.toggleEncryption(); // sets isEncrypted = true
+      editor.toggleEncryption();
       final password = await _showSetPasswordDialog(context);
       if (password == null || !context.mounted) {
-        // User cancelled → revert
-        editor.toggleEncryption();
+        editor.toggleEncryption(); // revert
         return;
       }
       tab.password = password;
       await _saveFile(context);
     } else {
-      // Decrypting: toggle flag, save will handle extension swap on next save
       editor.toggleEncryption();
     }
   }
@@ -879,8 +856,6 @@ class _MainScreenState extends State<MainScreen> {
 
   void _zoomIn(BuildContext context) {
     final editor = context.read<EditorProvider>();
-    // Text size controls only apply in plain text mode.
-    // In rich text mode, font size is set per-selection via the formatting toolbar.
     if (editor.activeTab?.mode == EditorMode.richText) return;
     editor.setTabFontSize((editor.activeTab?.tabFontSize ?? 14.0) + 1);
   }
@@ -899,40 +874,71 @@ class _MainScreenState extends State<MainScreen> {
 
   Future<String?> _showPasswordDialog(BuildContext context, String title, String message) async {
     final controller = TextEditingController();
+    bool obscure = true;
     final result = await showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(message),
-            const SizedBox(height: 16),
-            TextField(
-              controller: controller,
-              obscureText: true,
-              autofocus: true,
-              decoration: const InputDecoration(
-                labelText: 'Password',
-                border: OutlineInputBorder(),
-                enabledBorder: OutlineInputBorder(),
-                focusedBorder: OutlineInputBorder(),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final capsLock = HardwareKeyboard.instance.lockModesEnabled
+              .contains(KeyboardLockMode.capsLock);
+          return KeyboardListener(
+            focusNode: FocusNode(),
+            onKeyEvent: (_) => setDialogState(() {}),
+            child: AlertDialog(
+              title: Text(title),
+              content: SizedBox(
+                width: 360,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(message),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: controller,
+                      obscureText: obscure,
+                      autofocus: true,
+                      decoration: InputDecoration(
+                        labelText: 'Password',
+                        border: const OutlineInputBorder(),
+                        enabledBorder: const OutlineInputBorder(),
+                        focusedBorder: const OutlineInputBorder(),
+                        suffixIcon: IconButton(
+                          icon: Icon(obscure ? Icons.visibility_off : Icons.visibility, size: 20),
+                          onPressed: () => setDialogState(() => obscure = !obscure),
+                          tooltip: obscure ? 'Show password' : 'Hide password',
+                        ),
+                      ),
+                      onSubmitted: (value) {
+                        if (value.isNotEmpty) Navigator.pop(ctx, value);
+                      },
+                    ),
+                    if (capsLock) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Icon(Icons.warning_amber_rounded, size: 14, color: Theme.of(ctx).colorScheme.error),
+                          const SizedBox(width: 6),
+                          Text('Caps Lock is on', style: TextStyle(
+                            fontSize: 12, color: Theme.of(ctx).colorScheme.error,
+                          )),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
               ),
-              onSubmitted: (value) {
-                if (value.isNotEmpty) Navigator.pop(ctx, value);
-              },
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                FilledButton(
+                  onPressed: () {
+                    if (controller.text.isNotEmpty) Navigator.pop(ctx, controller.text);
+                  },
+                  child: const Text('Open'),
+                ),
+              ],
             ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () {
-              if (controller.text.isNotEmpty) Navigator.pop(ctx, controller.text);
-            },
-            child: const Text('Open'),
-          ),
-        ],
+          );
+        },
       ),
     );
     controller.dispose();
@@ -943,72 +949,107 @@ class _MainScreenState extends State<MainScreen> {
     final controller1 = TextEditingController();
     final controller2 = TextEditingController();
     String? error;
+    bool obscure1 = true;
+    bool obscure2 = true;
 
     final result = await showDialog<String>(
       context: context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => AlertDialog(
-          title: const Text('Set Encryption Password'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text('This password will be required to open the file.'),
-              const SizedBox(height: 16),
-              TextField(
-                controller: controller1,
-                obscureText: true,
-                autofocus: true,
-                decoration: const InputDecoration(
-                  labelText: 'Password',
-                  border: OutlineInputBorder(),
-                  enabledBorder: OutlineInputBorder(),
-                  focusedBorder: OutlineInputBorder(),
+        builder: (ctx, setDialogState) {
+          final capsLock = HardwareKeyboard.instance.lockModesEnabled
+              .contains(KeyboardLockMode.capsLock);
+          return KeyboardListener(
+            focusNode: FocusNode(),
+            onKeyEvent: (_) => setDialogState(() {}),
+            child: AlertDialog(
+              title: const Text('Set Encryption Password'),
+              content: SizedBox(
+                width: 360,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('This password will be required to open the file.'),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: controller1,
+                      obscureText: obscure1,
+                      autofocus: true,
+                      decoration: InputDecoration(
+                        labelText: 'Password',
+                        border: const OutlineInputBorder(),
+                        enabledBorder: const OutlineInputBorder(),
+                        focusedBorder: const OutlineInputBorder(),
+                        suffixIcon: IconButton(
+                          icon: Icon(obscure1 ? Icons.visibility_off : Icons.visibility, size: 20),
+                          onPressed: () => setDialogState(() => obscure1 = !obscure1),
+                          tooltip: obscure1 ? 'Show password' : 'Hide password',
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: controller2,
+                      obscureText: obscure2,
+                      decoration: InputDecoration(
+                        labelText: 'Confirm Password',
+                        border: const OutlineInputBorder(),
+                        enabledBorder: const OutlineInputBorder(),
+                        focusedBorder: const OutlineInputBorder(),
+                        suffixIcon: IconButton(
+                          icon: Icon(obscure2 ? Icons.visibility_off : Icons.visibility, size: 20),
+                          onPressed: () => setDialogState(() => obscure2 = !obscure2),
+                          tooltip: obscure2 ? 'Show password' : 'Hide password',
+                        ),
+                      ),
+                      onSubmitted: (_) {
+                        if (controller1.text == controller2.text && controller1.text.length >= 8) {
+                          Navigator.pop(ctx, controller1.text);
+                        }
+                      },
+                    ),
+                    if (capsLock) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Icon(Icons.warning_amber_rounded, size: 14, color: Theme.of(ctx).colorScheme.error),
+                          const SizedBox(width: 6),
+                          Text('Caps Lock is on', style: TextStyle(
+                            fontSize: 12, color: Theme.of(ctx).colorScheme.error,
+                          )),
+                        ],
+                      ),
+                    ],
+                    if (error != null) ...[
+                      const SizedBox(height: 8),
+                      Text(error!, style: TextStyle(color: Theme.of(ctx).colorScheme.error, fontSize: 12)),
+                    ],
+                  ],
                 ),
               ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: controller2,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: 'Confirm Password',
-                  border: OutlineInputBorder(),
-                  enabledBorder: OutlineInputBorder(),
-                  focusedBorder: OutlineInputBorder(),
-                ),
-                onSubmitted: (_) {
-                  if (controller1.text == controller2.text && controller1.text.length >= 4) {
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                FilledButton(
+                  onPressed: () {
+                    if (controller1.text.isEmpty) {
+                      setDialogState(() => error = 'Password cannot be empty');
+                      return;
+                    }
+                    if (controller1.text.length < 8) {
+                      setDialogState(() => error = 'Password must be at least 8 characters');
+                      return;
+                    }
+                    if (controller1.text != controller2.text) {
+                      setDialogState(() => error = 'Passwords do not match');
+                      return;
+                    }
                     Navigator.pop(ctx, controller1.text);
-                  }
-                },
-              ),
-              if (error != null) ...[
-                const SizedBox(height: 8),
-                Text(error!, style: TextStyle(color: Theme.of(ctx).colorScheme.error, fontSize: 12)),
+                  },
+                  child: const Text('Encrypt'),
+                ),
               ],
-            ],
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-            FilledButton(
-              onPressed: () {
-                if (controller1.text.isEmpty) {
-                  setDialogState(() => error = 'Password cannot be empty');
-                  return;
-                }
-                if (controller1.text.length < 4) {
-                  setDialogState(() => error = 'Password must be at least 4 characters');
-                  return;
-                }
-                if (controller1.text != controller2.text) {
-                  setDialogState(() => error = 'Passwords do not match');
-                  return;
-                }
-                Navigator.pop(ctx, controller1.text);
-              },
-              child: const Text('Encrypt'),
             ),
-          ],
-        ),
+          );
+        },
       ),
     );
     controller1.dispose();
@@ -1052,108 +1093,163 @@ class _MainScreenState extends State<MainScreen> {
   void _showAbout(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final colorScheme = Theme.of(context).colorScheme;
-    final muted = isDark ? const Color(0xFF707070) : const Color(0xFF999999);
+    final heading = isDark ? const Color(0xFFE0E0E0) : const Color(0xFF1A1A1A);
     final body = isDark ? const Color(0xFF909090) : const Color(0xFF666666);
+    final muted = isDark ? const Color(0xFF585858) : const Color(0xFFAAAAAA);
     final dividerColor = isDark ? const Color(0xFF2A2A2A) : const Color(0xFFE0E0E0);
+    final cardColor = isDark ? const Color(0xFF161616) : const Color(0xFFF5F5F5);
 
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        titlePadding: EdgeInsets.zero,
-        contentPadding: const EdgeInsets.fromLTRB(28, 20, 28, 8),
-        actionsPadding: const EdgeInsets.fromLTRB(28, 0, 28, 16),
-        content: SizedBox(
-          width: 300,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Logo + name + version
-              Row(
-                children: [
-                  Image.asset('assets/scrib_icon.png', width: 36, height: 36),
-                  const SizedBox(width: 12),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          titlePadding: EdgeInsets.zero,
+          contentPadding: const EdgeInsets.fromLTRB(28, 24, 28, 12),
+          actionsPadding: const EdgeInsets.fromLTRB(28, 0, 28, 16),
+          content: SizedBox(
+            width: 320,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    Image.asset('assets/scrib_icon.png', width: 40, height: 40),
+                    const SizedBox(width: 14),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Scrib Desktop', style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.3,
+                          color: heading,
+                        )),
+                        const SizedBox(height: 3),
+                        Row(
+                          children: [
+                            Text('v$appVersion', style: TextStyle(
+                              fontSize: 11,
+                              color: muted,
+                            )),
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: colorScheme.primary.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text('GPL-3.0', style: TextStyle(
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.w600,
+                                color: colorScheme.primary,
+                                letterSpacing: 0.3,
+                              )),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 18),
+                Divider(height: 1, thickness: 0.5, color: dividerColor),
+                const SizedBox(height: 16),
+
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('The encrypted editor.', style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    color: colorScheme.primary,
+                    letterSpacing: 0.2,
+                  )),
+                ),
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(appTagline, style: TextStyle(
+                    fontSize: 12,
+                    color: body,
+                  )),
+                ),
+
+                const SizedBox(height: 16),
+
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: cardColor,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
                     children: [
-                      Text('Scrib Desktop', style: TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.3,
-                        color: isDark ? const Color(0xFFE0E0E0) : const Color(0xFF1A1A1A),
-                      )),
-                      const SizedBox(height: 1),
-                      Text('v$appVersion', style: TextStyle(
-                        fontSize: 11,
-                        color: muted,
-                        letterSpacing: 0.2,
-                      )),
+                      _aboutRow(Icons.shield_outlined, 'AES-256 encryption + tamper protection', body, colorScheme.primary),
+                      const SizedBox(height: 8),
+                      _aboutRow(Icons.description_outlined, 'Plain text, rich text, and .scrb', body, colorScheme.primary),
+                      const SizedBox(height: 8),
+                      _aboutRow(Icons.lock_outlined, 'Your files. Your keys. Always.', body, colorScheme.primary),
                     ],
                   ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Divider(height: 1, thickness: 0.5, color: dividerColor),
-              const SizedBox(height: 14),
-              // Tagline
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text('The encrypted editor.', style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  color: colorScheme.primary,
-                  letterSpacing: 0.2,
-                )),
-              ),
-              const SizedBox(height: 3),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text(appTagline, style: TextStyle(
-                  fontSize: 11.5,
+                ),
+
+                const SizedBox(height: 16),
+                Divider(height: 1, thickness: 0.5, color: dividerColor),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: isDark ? const Color(0xFF0A0A0A) : const Color(0xFF1A1A1A),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    ' ___  ___ ___ ___ ___\n'
+                    r'/ __|/ __| _ \_ _| _ )' '\n'
+                    r'\__ \ (__|   /| || _ \' '\n'
+                    r'|___/\___|_|_\___|___/' '\n'
+                    '     BEESWAX  PAT',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontFamily: 'Consolas',
+                      fontSize: 10,
+                      height: 1.2,
+                      color: colorScheme.primary,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 10),
+                Text('with Claude Opus 4.6 & Sonnet 4.6', style: TextStyle(
+                  fontSize: 10.5,
                   color: muted,
                   letterSpacing: 0.1,
                 )),
-              ),
-              const SizedBox(height: 14),
-              // Features
-              _aboutRow(Icons.shield_outlined, 'AES-256 encryption + tamper protection', body),
-              const SizedBox(height: 5),
-              _aboutRow(Icons.description_outlined, 'Plain text, rich text, and .scrb', body),
-              const SizedBox(height: 5),
-              _aboutRow(Icons.lock_outlined, 'Your files. Your keys. Always.', body),
-              const SizedBox(height: 14),
-              Divider(height: 1, thickness: 0.5, color: dividerColor),
-              const SizedBox(height: 10),
-              // Attribution
-              Text('Built by Beeswax Pat', style: TextStyle(
-                fontSize: 10.5,
-                fontStyle: FontStyle.italic,
-                color: muted,
-                letterSpacing: 0.2,
-              )),
-            ],
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Close'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
     );
   }
 
-  Widget _aboutRow(IconData icon, String text, Color color) {
+  Widget _aboutRow(IconData icon, String text, Color textColor, Color iconColor) {
     return Row(
       children: [
-        Icon(icon, size: 13, color: color.withValues(alpha: 0.6)),
-        const SizedBox(width: 8),
-        Text(text, style: TextStyle(
-          fontSize: 11.5,
-          color: color,
-          letterSpacing: 0.1,
-        )),
+        Icon(icon, size: 14, color: iconColor.withValues(alpha: 0.7)),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(text, style: TextStyle(
+            fontSize: 12,
+            color: textColor,
+            letterSpacing: 0.1,
+          )),
+        ),
       ],
     );
   }
