@@ -23,6 +23,8 @@ Built by [Beeswax Pat](https://scrib.cfd/) with [Claude Code](https://claude.ai/
 
 ![Scrib Desktop — multi-tab, rich text, encrypted. Three tabs open with encryption active.](screenshot.png)
 
+![Scrib Desktop — rich text mode with dark theme, showing formatted notes in the editor.](screenshot-richtext.png)
+
 ---
 
 ## What Is This?
