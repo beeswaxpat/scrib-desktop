@@ -5,7 +5,11 @@ import 'package:flutter_quill/flutter_quill.dart' show ChangeSource;
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:desktop_drop/desktop_drop.dart';
+import '../dialogs/about_dialog.dart';
+import '../dialogs/confirm_dialog.dart';
+import '../dialogs/password_dialog.dart';
 import '../providers/editor_provider.dart';
+import '../services/file_operations.dart';
 import '../services/file_service.dart';
 import '../services/rtf_service.dart';
 import '../services/settings_service.dart';
@@ -16,9 +20,9 @@ import '../widgets/status_bar_widget.dart';
 import '../widgets/toolbar_widget.dart';
 import '../widgets/search_bar_widget.dart';
 import '../widgets/global_search_widget.dart';
-import '../constants.dart';
 
-/// Main Scrib Desktop screen - the whole app in one window
+/// Main Scrib Desktop screen. Delegates dialogs to [dialogs/] and the
+/// save/save-as decision tree to [FileOperations].
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
 
@@ -30,6 +34,16 @@ class _MainScreenState extends State<MainScreen> {
   bool _isDragging = false;
   String? _processingMessage; // non-null → show loading overlay
   final _editorKey = GlobalKey<ScribEditorState>();
+
+  FileOperations get _fileOps => FileOperations(
+        context.read<FileService>(),
+        context.read<SettingsService>(),
+      );
+
+  void _setProcessing(String? message) {
+    if (!mounted) return;
+    setState(() => _processingMessage = message);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -421,7 +435,7 @@ class _MainScreenState extends State<MainScreen> {
         SubmenuButton(
           menuChildren: [
             MenuItemButton(
-              onPressed: () => _showAbout(context),
+              onPressed: () => showScribAbout(context),
               child: const Text('About Scrib'),
             ),
           ],
@@ -431,16 +445,17 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
+  // ── File operations ──────────────────────────────────────────────────────
+
   Future<void> _openFileDialog(BuildContext context) async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['txt', 'scrb', 'rtf', 'md', 'log', 'csv', 'json', 'xml', 'yaml', 'yml', 'ini', 'cfg'],
       allowMultiple: true,
     );
-    if (result != null && context.mounted) {
-      for (final file in result.files) {
-        if (file.path != null) await _openFilePath(context, file.path!);
-      }
+    if (result == null || !context.mounted) return;
+    for (final file in result.files) {
+      if (file.path != null) await _openFilePath(context, file.path!);
     }
   }
 
@@ -449,67 +464,66 @@ class _MainScreenState extends State<MainScreen> {
     final ext = path.split('.').last.toLowerCase();
 
     if (ext == 'scrb') {
-      final password = await _showPasswordDialog(context, 'Enter Password', 'This file is encrypted.');
-      if (password != null && password.isNotEmpty && context.mounted) {
-        setState(() => _processingMessage = 'Decrypting...');
-        try {
-          final success = await editor.openScrbFile(path, password);
-          if (!success && context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Wrong password or corrupt file'), behavior: SnackBarBehavior.floating),
-            );
-          }
-        } catch (e) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Could not open encrypted file: $e'), behavior: SnackBarBehavior.floating),
-            );
-          }
-        } finally {
-          setState(() => _processingMessage = null);
+      final password = await showPasswordPrompt(
+        context,
+        title: 'Enter Password',
+        message: 'This file is encrypted.',
+      );
+      if (password == null || password.isEmpty) return;
+      if (!context.mounted) return;
+      _setProcessing('Decrypting...');
+      try {
+        final success = await editor.openScrbFile(path, password);
+        if (!success && context.mounted) {
+          _showSnack(context, 'Wrong password or corrupt file');
         }
+      } on ScribFileReadException {
+        if (context.mounted) _showSnack(context, 'Could not read file');
+      } catch (_) {
+        if (context.mounted) _showSnack(context, 'Could not open encrypted file');
+      } finally {
+        _setProcessing(null);
       }
-    } else if (ext == 'rtf') {
+      return;
+    }
+
+    if (ext == 'rtf') {
       try {
         final fileService = context.read<FileService>();
-        final rtfService = RtfService();
         final rtfContent = await fileService.readRtfFile(path);
-        final deltaJson = rtfService.rtfToDelta(rtfContent);
-        editor.openRtfFile(path, deltaJson);
-      } catch (e) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not open RTF file: $e'), behavior: SnackBarBehavior.floating),
-          );
-        }
+        final deltaJson = RtfService.rtfToDelta(rtfContent);
+        await editor.openRtfFile(path, deltaJson);
+      } on ScribFileReadException {
+        if (context.mounted) _showSnack(context, 'Could not read RTF file');
+      } catch (_) {
+        if (context.mounted) _showSnack(context, 'Could not open RTF file');
       }
-    } else {
-      try {
-        await editor.openFile(path);
-      } on ScribNeedsPasswordException catch (e) {
-        if (!context.mounted) return;
-        final password = await _showPasswordDialog(context, 'Enter Password', '${e.fileName} is encrypted.');
-        if (password != null && password.isNotEmpty && context.mounted) {
-          final success = await editor.openScrbFile(e.path, password);
-          if (!success && context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Wrong password or corrupt file'), behavior: SnackBarBehavior.floating),
-            );
-          }
-        }
-      } catch (e) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not open file: $e'), behavior: SnackBarBehavior.floating),
-          );
-        }
+      return;
+    }
+
+    try {
+      await editor.openFile(path);
+    } on ScribNeedsPasswordException catch (e) {
+      if (!context.mounted) return;
+      final password = await showPasswordPrompt(
+        context,
+        title: 'Enter Password',
+        message: '${e.fileName} is encrypted.',
+      );
+      if (password == null || password.isEmpty || !context.mounted) return;
+      final success = await editor.openScrbFile(e.path, password);
+      if (!success && context.mounted) {
+        _showSnack(context, 'Wrong password or corrupt file');
       }
+    } on ScribFileReadException {
+      if (context.mounted) _showSnack(context, 'Could not read file');
+    } catch (_) {
+      if (context.mounted) _showSnack(context, 'Could not open file');
     }
   }
 
   Future<void> _saveFile(BuildContext context) async {
     final editor = context.read<EditorProvider>();
-    final fileService = context.read<FileService>();
     final tab = editor.activeTab;
     if (tab == null) return;
 
@@ -518,169 +532,59 @@ class _MainScreenState extends State<MainScreen> {
       return;
     }
 
-    final currentPath = tab.filePath!;
-    if (tab.isEncrypted && !currentPath.endsWith('.scrb')) {
-      final newPath = _swapExtension(currentPath, '.scrb');
-      if (tab.password == null) {
-        final password = await _showSetPasswordDialog(context);
-        if (password == null) return;
-        tab.password = password;
-      }
-      setState(() => _processingMessage = 'Encrypting...');
-      try {
-        await editor.saveActiveTabAs(newPath, encrypted: true, password: tab.password);
-      } catch (e) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not save file: $e'), behavior: SnackBarBehavior.floating),
-          );
-        }
-      } finally {
-        setState(() => _processingMessage = null);
-      }
-      return;
-    }
-    if (!tab.isEncrypted && currentPath.endsWith('.scrb')) {
-      final ext = tab.mode == EditorMode.richText ? '.rtf' : '.txt';
-      final newPath = _swapExtension(currentPath, ext);
-      try {
-        if (ext == '.rtf' && tab.deltaJson.isNotEmpty) {
-          final rtfService = RtfService();
-          final rtfContent = rtfService.deltaToRtf(tab.deltaJson);
-          await fileService.writeRtfFile(newPath, rtfContent);
-          editor.markTabSavedAs(newPath);
-        } else {
-          await editor.saveActiveTabAs(newPath);
-        }
-      } catch (e) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not save file: $e'), behavior: SnackBarBehavior.floating),
-          );
-        }
-      }
-      return;
-    }
-
+    String? password;
+    // Pre-flight: if we need a password and the tab doesn't have one, prompt.
     if (tab.isEncrypted && tab.password == null) {
-      final password = await _showSetPasswordDialog(context);
+      password = await showSetPasswordDialog(context);
       if (password == null) return;
-      tab.password = password;
+      if (!context.mounted) return;
     }
 
-    if (tab.isEncrypted) {
-      setState(() => _processingMessage = 'Encrypting...');
-    }
+    final isEncryptedSave = tab.isEncrypted;
+    _setProcessing(isEncryptedSave ? 'Encrypting...' : null);
 
     try {
-      // RTF files need special conversion
-      if (tab.filePath!.endsWith('.rtf') && tab.mode == EditorMode.richText && tab.deltaJson.isNotEmpty) {
-        final rtfService = RtfService();
-        final rtfContent = rtfService.deltaToRtf(tab.deltaJson);
-        await fileService.writeRtfFile(tab.filePath!, rtfContent);
-        tab.markSaved();
-        editor.onContentChanged();
-      } else {
-        await editor.saveActiveTab();
+      final result = await _fileOps.saveActive(
+        editor,
+        passwordForNewEncryption: password,
+      );
+      if (!result.ok) {
+        if (context.mounted) _showSnack(context, 'Could not save file');
+        return;
       }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not save file: $e'), behavior: SnackBarBehavior.floating),
-        );
+      if (result.extensionChanged && context.mounted && result.newPath != null) {
+        final newName = result.newPath!.split(Platform.pathSeparator).last;
+        _showSnack(context, 'Saved as $newName');
       }
     } finally {
-      if (_processingMessage != null) {
-        setState(() => _processingMessage = null);
-      }
+      _setProcessing(null);
     }
-  }
-
-  /// Swap the file extension, handling files with or without an existing extension.
-  String _swapExtension(String path, String newExt) {
-    final dot = path.lastIndexOf('.');
-    final sep = path.lastIndexOf(Platform.pathSeparator);
-    // Only strip if the dot is after the last separator (i.e. it's a real extension)
-    if (dot > sep && dot > 0) {
-      return '${path.substring(0, dot)}$newExt';
-    }
-    return '$path$newExt';
   }
 
   Future<void> _saveFileAs(BuildContext context) async {
     final editor = context.read<EditorProvider>();
-    final settings = context.read<SettingsService>();
-    final fileService = context.read<FileService>();
     final tab = editor.activeTab;
     if (tab == null) return;
 
-    String extension;
-    if (tab.isEncrypted) {
-      extension = 'scrb';
-    } else if (tab.mode == EditorMode.richText) {
-      extension = 'rtf';
-    } else {
-      extension = 'txt';
-    }
-    final defaultName = tab.fileName.endsWith('.$extension')
-        ? tab.fileName
-        : '${tab.fileName.replaceAll(RegExp(r'\.[^.]+$'), '')}.$extension';
-
-    String? initialDir;
-    if (tab.filePath != null) {
-      final sep = tab.filePath!.lastIndexOf(Platform.pathSeparator);
-      if (sep > 0) initialDir = tab.filePath!.substring(0, sep);
-    } else {
-      final defaultLoc = settings.defaultSaveLocation;
-      if (defaultLoc.isNotEmpty) initialDir = defaultLoc;
-    }
-
-    final path = await FilePicker.platform.saveFile(
-      dialogTitle: 'Save As',
-      fileName: defaultName,
-      initialDirectory: initialDir,
-      type: FileType.custom,
-      allowedExtensions: ['txt', 'scrb', 'rtf'],
-    );
-
-    if (path != null && context.mounted) {
-      // Ensure .scrb extension if tab is encrypted, even if user omitted it.
-      final effectivePath = (tab.isEncrypted && !path.endsWith('.scrb'))
-          ? _swapExtension(path, '.scrb')
-          : path;
-
-      final isEncrypted = effectivePath.endsWith('.scrb');
-      final isRtf = effectivePath.endsWith('.rtf');
-      String? password;
-      if (isEncrypted) {
-        password = tab.password ?? await _showSetPasswordDialog(context);
-        if (password == null) return;
-      }
-
-      if (isEncrypted) {
-        setState(() => _processingMessage = 'Encrypting...');
-      }
-
-      try {
-        if (isRtf && tab.mode == EditorMode.richText && tab.deltaJson.isNotEmpty) {
-          final rtfService = RtfService();
-          final rtfContent = rtfService.deltaToRtf(tab.deltaJson);
-          await fileService.writeRtfFile(effectivePath, rtfContent);
-          editor.markTabSavedAs(effectivePath);
-        } else {
-          await editor.saveActiveTabAs(effectivePath, encrypted: isEncrypted, password: password);
+    bool processing = false;
+    try {
+      final result = await _fileOps.saveAs(
+        editor,
+        resolvePassword: () async {
+          if (!context.mounted) return null;
+          return showSetPasswordDialog(context);
+        },
+      );
+      if (!result.ok) {
+        if (result.error != null && result.error != 'Cancelled' && context.mounted) {
+          _showSnack(context, 'Could not save file');
         }
-      } catch (e) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not save file: $e'), behavior: SnackBarBehavior.floating),
-          );
-        }
-      } finally {
-        if (_processingMessage != null) {
-          setState(() => _processingMessage = null);
-        }
+        return;
       }
+      // Surface encryption progress indicator only for actual .scrb writes.
+      if (tab.isEncrypted) processing = true;
+    } finally {
+      if (processing) _setProcessing(null);
     }
   }
 
@@ -697,15 +601,25 @@ class _MainScreenState extends State<MainScreen> {
       final ext = oldPath.split('.').last;
       final newPath = '$dir${Platform.pathSeparator}$newName.$ext';
 
+      // Check for overwrite — never silently clobber another file.
+      if (await File(newPath).exists() && newPath != oldPath) {
+        if (!context.mounted) return;
+        final overwrite = await showScribConfirm(
+          context,
+          title: 'Replace File?',
+          message: 'A file named "$newName.$ext" already exists in this folder. Replace it?',
+          confirmLabel: 'Replace',
+        );
+        if (!overwrite) return;
+      }
+
       try {
         await File(oldPath).rename(newPath);
-        editor.updateTabFile(index, newPath);
-      } catch (e) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not rename: $e'), behavior: SnackBarBehavior.floating),
-          );
-        }
+        // Re-lookup by identity in case any other op shifted tabs during the await.
+        final currentIndex = editor.tabs.indexOf(tab);
+        if (currentIndex != -1) editor.updateTabFile(currentIndex, newPath);
+      } catch (_) {
+        if (context.mounted) _showSnack(context, 'Could not rename file');
       }
     } else {
       final defaultDir = settings.defaultSaveLocation;
@@ -718,7 +632,7 @@ class _MainScreenState extends State<MainScreen> {
 
         if (tab.isEncrypted && tab.password == null) {
           if (!context.mounted) return;
-          final password = await _showSetPasswordDialog(context);
+          final password = await showSetPasswordDialog(context);
           if (password == null) {
             editor.renameTab(index, newName);
             return;
@@ -726,15 +640,13 @@ class _MainScreenState extends State<MainScreen> {
           tab.password = password;
         }
 
-        editor.setActiveTab(index);
+        final currentIndex = editor.tabs.indexOf(tab);
+        if (currentIndex == -1) return;
+        editor.setActiveTab(currentIndex);
         try {
           await editor.saveActiveTabAs(path, encrypted: tab.isEncrypted, password: tab.password);
-        } catch (e) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Could not save: $e'), behavior: SnackBarBehavior.floating),
-            );
-          }
+        } catch (_) {
+          if (context.mounted) _showSnack(context, 'Could not save file');
         }
       } else {
         editor.renameTab(index, newName);
@@ -750,14 +662,10 @@ class _MainScreenState extends State<MainScreen> {
           ? settings.defaultSaveLocation
           : null,
     );
-    if (path != null) {
-      await settings.setDefaultSaveLocation(path);
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Default save location: $path'), behavior: SnackBarBehavior.floating),
-        );
-      }
-    }
+    if (path == null || !context.mounted) return;
+    await settings.setDefaultSaveLocation(path);
+    if (!context.mounted) return;
+    _showSnack(context, 'Default save location: $path');
   }
 
   Future<void> _closeCurrentTab(BuildContext context) async {
@@ -781,32 +689,18 @@ class _MainScreenState extends State<MainScreen> {
       return;
     }
 
-    final result = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Save Changes?'),
-        content: Text('${tab.fileName} has unsaved changes.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, 'discard'), child: const Text('Discard')),
-          TextButton(onPressed: () => Navigator.pop(ctx, 'cancel'), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, 'save'), child: const Text('Save')),
-        ],
-      ),
-    );
+    final choice = await showUnsavedChangesDialog(context, fileName: tab.fileName);
+    if (!mounted || choice == UnsavedChangesChoice.cancel) return;
 
-    if (!mounted || result == 'cancel' || result == null) return;
-
-    if (result == 'save') {
-      editor.setActiveTab(index);
+    if (choice == UnsavedChangesChoice.save) {
+      final currentIndex = editor.tabs.indexOf(tab);
+      if (currentIndex == -1) return;
+      editor.setActiveTab(currentIndex);
       if (tab.filePath != null) {
         try {
           await editor.saveActiveTab();
-        } catch (e) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Could not save: $e'), behavior: SnackBarBehavior.floating),
-            );
-          }
+        } catch (_) {
+          if (context.mounted) _showSnack(context, 'Could not save file');
           return;
         }
       } else {
@@ -828,7 +722,7 @@ class _MainScreenState extends State<MainScreen> {
 
     if (!tab.isEncrypted) {
       editor.toggleEncryption();
-      final password = await _showSetPasswordDialog(context);
+      final password = await showSetPasswordDialog(context);
       if (password == null || !context.mounted) {
         editor.toggleEncryption(); // revert
         return;
@@ -872,385 +766,48 @@ class _MainScreenState extends State<MainScreen> {
     editor.setTabFontSize(14.0);
   }
 
-  Future<String?> _showPasswordDialog(BuildContext context, String title, String message) async {
-    final controller = TextEditingController();
-    bool obscure = true;
-    final result = await showDialog<String>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) {
-          final capsLock = HardwareKeyboard.instance.lockModesEnabled
-              .contains(KeyboardLockMode.capsLock);
-          return KeyboardListener(
-            focusNode: FocusNode(),
-            onKeyEvent: (_) => setDialogState(() {}),
-            child: AlertDialog(
-              title: Text(title),
-              content: SizedBox(
-                width: 360,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(message),
-                    const SizedBox(height: 16),
-                    TextField(
-                      controller: controller,
-                      obscureText: obscure,
-                      autofocus: true,
-                      decoration: InputDecoration(
-                        labelText: 'Password',
-                        border: const OutlineInputBorder(),
-                        enabledBorder: const OutlineInputBorder(),
-                        focusedBorder: const OutlineInputBorder(),
-                        suffixIcon: IconButton(
-                          icon: Icon(obscure ? Icons.visibility_off : Icons.visibility, size: 20),
-                          onPressed: () => setDialogState(() => obscure = !obscure),
-                          tooltip: obscure ? 'Show password' : 'Hide password',
-                        ),
-                      ),
-                      onSubmitted: (value) {
-                        if (value.isNotEmpty) Navigator.pop(ctx, value);
-                      },
-                    ),
-                    if (capsLock) ...[
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Icon(Icons.warning_amber_rounded, size: 14, color: Theme.of(ctx).colorScheme.error),
-                          const SizedBox(width: 6),
-                          Text('Caps Lock is on', style: TextStyle(
-                            fontSize: 12, color: Theme.of(ctx).colorScheme.error,
-                          )),
-                        ],
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-                FilledButton(
-                  onPressed: () {
-                    if (controller.text.isNotEmpty) Navigator.pop(ctx, controller.text);
-                  },
-                  child: const Text('Open'),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-    controller.dispose();
-    return result;
-  }
-
-  Future<String?> _showSetPasswordDialog(BuildContext context) async {
-    final controller1 = TextEditingController();
-    final controller2 = TextEditingController();
-    String? error;
-    bool obscure1 = true;
-    bool obscure2 = true;
-
-    final result = await showDialog<String>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) {
-          final capsLock = HardwareKeyboard.instance.lockModesEnabled
-              .contains(KeyboardLockMode.capsLock);
-          return KeyboardListener(
-            focusNode: FocusNode(),
-            onKeyEvent: (_) => setDialogState(() {}),
-            child: AlertDialog(
-              title: const Text('Set Encryption Password'),
-              content: SizedBox(
-                width: 360,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('This password will be required to open the file.'),
-                    const SizedBox(height: 16),
-                    TextField(
-                      controller: controller1,
-                      obscureText: obscure1,
-                      autofocus: true,
-                      decoration: InputDecoration(
-                        labelText: 'Password',
-                        border: const OutlineInputBorder(),
-                        enabledBorder: const OutlineInputBorder(),
-                        focusedBorder: const OutlineInputBorder(),
-                        suffixIcon: IconButton(
-                          icon: Icon(obscure1 ? Icons.visibility_off : Icons.visibility, size: 20),
-                          onPressed: () => setDialogState(() => obscure1 = !obscure1),
-                          tooltip: obscure1 ? 'Show password' : 'Hide password',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: controller2,
-                      obscureText: obscure2,
-                      decoration: InputDecoration(
-                        labelText: 'Confirm Password',
-                        border: const OutlineInputBorder(),
-                        enabledBorder: const OutlineInputBorder(),
-                        focusedBorder: const OutlineInputBorder(),
-                        suffixIcon: IconButton(
-                          icon: Icon(obscure2 ? Icons.visibility_off : Icons.visibility, size: 20),
-                          onPressed: () => setDialogState(() => obscure2 = !obscure2),
-                          tooltip: obscure2 ? 'Show password' : 'Hide password',
-                        ),
-                      ),
-                      onSubmitted: (_) {
-                        if (controller1.text == controller2.text && controller1.text.length >= 8) {
-                          Navigator.pop(ctx, controller1.text);
-                        }
-                      },
-                    ),
-                    if (capsLock) ...[
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Icon(Icons.warning_amber_rounded, size: 14, color: Theme.of(ctx).colorScheme.error),
-                          const SizedBox(width: 6),
-                          Text('Caps Lock is on', style: TextStyle(
-                            fontSize: 12, color: Theme.of(ctx).colorScheme.error,
-                          )),
-                        ],
-                      ),
-                    ],
-                    if (error != null) ...[
-                      const SizedBox(height: 8),
-                      Text(error!, style: TextStyle(color: Theme.of(ctx).colorScheme.error, fontSize: 12)),
-                    ],
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-                FilledButton(
-                  onPressed: () {
-                    if (controller1.text.isEmpty) {
-                      setDialogState(() => error = 'Password cannot be empty');
-                      return;
-                    }
-                    if (controller1.text.length < 8) {
-                      setDialogState(() => error = 'Password must be at least 8 characters');
-                      return;
-                    }
-                    if (controller1.text != controller2.text) {
-                      setDialogState(() => error = 'Passwords do not match');
-                      return;
-                    }
-                    Navigator.pop(ctx, controller1.text);
-                  },
-                  child: const Text('Encrypt'),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-    controller1.dispose();
-    controller2.dispose();
-    return result;
-  }
-
   Future<void> _confirmToggleEditorMode(BuildContext context) async {
     final editor = context.read<EditorProvider>();
     final tab = editor.activeTab;
     if (tab == null) return;
 
     if (tab.mode == EditorMode.richText) {
-      // Rich → Plain: warn user about formatting loss
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Switch to Plain Text?'),
-          content: const Text(
+      final confirmed = await showScribConfirm(
+        context,
+        title: 'Switch to Plain Text?',
+        message:
             'Switching to Plain Text will remove all formatting '
-            '(bold, italic, colors, fonts, etc.). This cannot be undone.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Switch to Plain Text'),
-            ),
-          ],
-        ),
+            '(bold, italic, colors, fonts, etc.). You can revert within this session.',
+        confirmLabel: 'Switch to Plain Text',
       );
-      if (confirmed != true) return;
+      if (!confirmed) return;
     }
 
     editor.toggleEditorMode();
-  }
 
-  void _showAbout(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final colorScheme = Theme.of(context).colorScheme;
-    final heading = isDark ? const Color(0xFFE0E0E0) : const Color(0xFF1A1A1A);
-    final body = isDark ? const Color(0xFF909090) : const Color(0xFF666666);
-    final muted = isDark ? const Color(0xFF585858) : const Color(0xFFAAAAAA);
-    final dividerColor = isDark ? const Color(0xFF2A2A2A) : const Color(0xFFE0E0E0);
-    final cardColor = isDark ? const Color(0xFF161616) : const Color(0xFFF5F5F5);
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          titlePadding: EdgeInsets.zero,
-          contentPadding: const EdgeInsets.fromLTRB(28, 24, 28, 12),
-          actionsPadding: const EdgeInsets.fromLTRB(28, 0, 28, 16),
-          content: SizedBox(
-            width: 320,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    Image.asset('assets/scrib_icon.png', width: 40, height: 40),
-                    const SizedBox(width: 14),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Scrib Desktop', style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: 0.3,
-                          color: heading,
-                        )),
-                        const SizedBox(height: 3),
-                        Row(
-                          children: [
-                            Text('v$appVersion', style: TextStyle(
-                              fontSize: 11,
-                              color: muted,
-                            )),
-                            const SizedBox(width: 8),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-                              decoration: BoxDecoration(
-                                color: colorScheme.primary.withValues(alpha: 0.12),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text('GPL-3.0', style: TextStyle(
-                                fontSize: 9.5,
-                                fontWeight: FontWeight.w600,
-                                color: colorScheme.primary,
-                                letterSpacing: 0.3,
-                              )),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 18),
-                Divider(height: 1, thickness: 0.5, color: dividerColor),
-                const SizedBox(height: 16),
-
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('The encrypted editor.', style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                    color: colorScheme.primary,
-                    letterSpacing: 0.2,
-                  )),
-                ),
-                const SizedBox(height: 4),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(appTagline, style: TextStyle(
-                    fontSize: 12,
-                    color: body,
-                  )),
-                ),
-
-                const SizedBox(height: 16),
-
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: cardColor,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Column(
-                    children: [
-                      _aboutRow(Icons.shield_outlined, 'AES-256 encryption + tamper protection', body, colorScheme.primary),
-                      const SizedBox(height: 8),
-                      _aboutRow(Icons.description_outlined, 'Plain text, rich text, and .scrb', body, colorScheme.primary),
-                      const SizedBox(height: 8),
-                      _aboutRow(Icons.lock_outlined, 'Your files. Your keys. Always.', body, colorScheme.primary),
-                    ],
-                  ),
-                ),
-
-                const SizedBox(height: 16),
-                Divider(height: 1, thickness: 0.5, color: dividerColor),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: isDark ? const Color(0xFF0A0A0A) : const Color(0xFF1A1A1A),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    ' ___  ___ ___ ___ ___\n'
-                    r'/ __|/ __| _ \_ _| _ )' '\n'
-                    r'\__ \ (__|   /| || _ \' '\n'
-                    r'|___/\___|_|_\___|___/' '\n'
-                    '     BEESWAX  PAT',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontFamily: 'Consolas',
-                      fontSize: 10,
-                      height: 1.2,
-                      color: colorScheme.primary,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 10),
-                Text('with Claude Opus 4.6 & Sonnet 4.6', style: TextStyle(
-                  fontSize: 10.5,
-                  color: muted,
-                  letterSpacing: 0.1,
-                )),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Close'),
-            ),
-          ],
+    // Offer a one-step revert via a SnackBar action.
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(tab.mode == EditorMode.richText
+            ? 'Switched to Rich Text'
+            : 'Switched to Plain Text'),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 6),
+        action: SnackBarAction(
+          label: 'Revert',
+          onPressed: () => editor.revertModeToggle(),
         ),
+      ),
     );
   }
 
-  Widget _aboutRow(IconData icon, String text, Color textColor, Color iconColor) {
-    return Row(
-      children: [
-        Icon(icon, size: 14, color: iconColor.withValues(alpha: 0.7)),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Text(text, style: TextStyle(
-            fontSize: 12,
-            color: textColor,
-            letterSpacing: 0.1,
-          )),
-        ),
-      ],
+  void _showSnack(BuildContext context, String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+      ),
     );
   }
 }

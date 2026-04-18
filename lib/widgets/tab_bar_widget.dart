@@ -203,15 +203,19 @@ class _ScribTabBarState extends State<ScribTabBar> {
                         ),
                         // Close button (hidden during rename)
                         if (_editingIndex != index)
-                          InkWell(
-                            onTap: () => widget.onCloseTab(index),
-                            borderRadius: BorderRadius.circular(4),
-                            child: Padding(
-                              padding: const EdgeInsets.all(2),
-                              child: Icon(
-                                Icons.close,
-                                size: 14,
-                                color: isDark ? const Color(0xFF606060) : const Color(0xFF999999),
+                          Semantics(
+                            label: 'Close ${tab.fileName}',
+                            button: true,
+                            child: InkWell(
+                              onTap: () => widget.onCloseTab(index),
+                              borderRadius: BorderRadius.circular(4),
+                              child: Padding(
+                                padding: const EdgeInsets.all(2),
+                                child: Icon(
+                                  Icons.close,
+                                  size: 14,
+                                  color: isDark ? const Color(0xFF606060) : const Color(0xFF999999),
+                                ),
                               ),
                             ),
                           ),
@@ -223,15 +227,23 @@ class _ScribTabBarState extends State<ScribTabBar> {
             ),
           ),
           // New tab button
-          InkWell(
-            onTap: () => editor.addNewTab(),
-            borderRadius: BorderRadius.circular(4),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              child: Icon(
-                Icons.add,
-                size: 20,
-                color: colorScheme.primary,
+          Semantics(
+            label: 'New tab',
+            button: true,
+            child: Tooltip(
+              message: 'New tab (Ctrl+N)',
+              waitDuration: const Duration(milliseconds: 500),
+              child: InkWell(
+                onTap: () => editor.addNewTab(),
+                borderRadius: BorderRadius.circular(4),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  child: Icon(
+                    Icons.add,
+                    size: 20,
+                    color: colorScheme.primary,
+                  ),
+                ),
               ),
             ),
           ),

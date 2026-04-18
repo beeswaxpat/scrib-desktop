@@ -1,0 +1,66 @@
+name: Flutter CI
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  analyze-and-test:
+    name: Analyze & test
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Show versions
+        run: |
+          flutter --version
+          dart --version
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Verify formatting (advisory)
+        run: dart format --output=none --set-exit-if-changed lib/ test/ || echo "Formatting differences detected (advisory — not failing build)"
+        continue-on-error: true
+
+      - name: Static analysis
+        run: flutter analyze --fatal-infos --fatal-warnings
+
+      - name: Run tests
+        run: flutter test --reporter expanded
+
+  build-windows:
+    name: Build Windows release
+    runs-on: windows-latest
+    needs: analyze-and-test
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrib-desktop-windows-${{ github.sha }}
+          path: build/windows/x64/runner/Release/
+          retention-days: 14

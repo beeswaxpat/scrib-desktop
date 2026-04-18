@@ -17,7 +17,7 @@ The encrypted desktop editor. Plain text, rich text, and `.scrb` — fully offli
 
 Built by [Beeswax Pat](https://scrib.cfd/) with [Claude Code](https://claude.ai/claude-code) · Licensed under the [GNU GPL v3](LICENSE)
 
-**[Download Latest Release](https://github.com/beeswaxpat/scrib-desktop/releases)** · **[Blog Post](https://scrib.cfd/blog/scrib-desktop-open-source)** · **[Website](https://scrib.cfd/)**
+**[Download Latest Release](https://github.com/beeswaxpat/scrib-desktop/releases)** · **[Changelog](CHANGELOG.md)** · **[Blog Post](https://scrib.cfd/blog/scrib-desktop-open-source)** · **[Website](https://scrib.cfd/)**
 
 ---
 
@@ -156,7 +156,8 @@ Scrib uses **Encrypt-then-MAC** with AES-256-CBC and HMAC-SHA256.
 | IV | 16 bytes, `Random.secure()` per save |
 | Salt | 32 bytes, `Random.secure()` per save |
 | HMAC | SHA-256 over `version ‖ IV ‖ salt ‖ ciphertext` |
-| Key hygiene | Zeroed after use. PBKDF2 runs in a background isolate. |
+| Key hygiene | PBKDF2 runs in a background isolate. Key bytes are zeroed after use. |
+| Atomic writes | Saves use `MoveFileExW` on Windows so a crash during save never corrupts your file. |
 
 `.scrb` v2 binary layout:
 
@@ -165,6 +166,25 @@ Scrib uses **Encrypt-then-MAC** with AES-256-CBC and HMAC-SHA256.
 ```
 
 The HMAC is verified before decryption. Tampered files are rejected.
+
+### Threat model
+
+Scrib defends against:
+- Someone with read access to your `.scrb` files but not your password
+- File tampering (HMAC covers the version byte, IV, salt, and ciphertext)
+- Disk-level corruption during a save (atomic rename protects existing files)
+
+Scrib does **not** defend against:
+- A compromised machine: a key-logger, RAM dump, or malicious Flutter build can recover
+  the password while a file is open. Passwords are held in memory as `String` for the
+  lifetime of an open encrypted tab — Dart strings are immutable and can't be securely
+  zeroed, so the password may linger in the heap until garbage collection.
+- Brute force against weak passwords. PBKDF2 with 100k iterations buys time but not
+  infinity. Use a long, high-entropy password.
+- File path / filename leakage: `recentFiles`, window position, and default save
+  location are stored in a plaintext Hive box under `%APPDATA%`. Future versions
+  may encrypt this; today the contents of your notes are encrypted, but the
+  *names* and *paths* of your notes are not.
 
 ---
 
@@ -194,12 +214,12 @@ Encrypted tabs display a gold lock icon.
 |---|---|
 | `flutter_quill` | Rich text editor (Delta format) |
 | `provider` | State management |
-| `hive` / `hive_flutter` | Local settings persistence |
+| `hive` | Local settings persistence |
 | `file_picker` | Native open/save dialogs |
 | `window_manager` | Window title, size, position |
 | `desktop_drop` | Drag and drop file support |
 | `pointycastle` | AES-256-CBC, PBKDF2, HMAC-SHA256 |
-| `cross_file` | Cross-platform file abstraction |
+| `ffi` | Windows `MoveFileExW` for atomic rename |
 
 ---
 

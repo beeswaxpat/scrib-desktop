@@ -15,6 +15,14 @@ class SettingsService extends ChangeNotifier {
     _settingsBox = await Hive.openBox(_settingsBoxName);
   }
 
+  /// Test-only initializer that opens the settings box in [directory] without
+  /// relying on path_provider (which is unavailable in headless tests).
+  @visibleForTesting
+  Future<void> initForTests(String directory) async {
+    Hive.init(directory);
+    _settingsBox = await Hive.openBox(_settingsBoxName);
+  }
+
   // Theme mode: 0 = system, 1 = light, 2 = dark
   int get themeMode => _settingsBox.get('themeMode', defaultValue: 2);
 

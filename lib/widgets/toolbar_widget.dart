@@ -338,15 +338,20 @@ class _ToolbarButton extends StatelessWidget {
             ? (isDark ? const Color(0xFF404040) : const Color(0xFFCCCCCC))
             : (isDark ? const Color(0xFFB0B0B0) : const Color(0xFF555555)));
 
-    return Tooltip(
-      message: tooltip,
-      waitDuration: const Duration(milliseconds: 500),
-      child: InkWell(
-        onTap: onPressed,
-        borderRadius: BorderRadius.circular(4),
-        child: Padding(
-          padding: const EdgeInsets.all(6),
-          child: Icon(icon, size: 18, color: color),
+    return Semantics(
+      label: tooltip,
+      button: true,
+      enabled: !isDisabled,
+      child: Tooltip(
+        message: tooltip,
+        waitDuration: const Duration(milliseconds: 500),
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(4),
+          child: Padding(
+            padding: const EdgeInsets.all(6),
+            child: Icon(icon, size: 18, color: color),
+          ),
         ),
       ),
     );

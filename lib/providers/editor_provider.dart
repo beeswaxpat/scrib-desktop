@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../constants.dart';
 import '../services/file_service.dart';
@@ -7,6 +8,20 @@ import '../services/settings_service.dart';
 
 /// Editor mode for each tab
 enum EditorMode { plainText, richText }
+
+/// Snapshot of a tab's content before a destructive operation (mode toggle).
+/// Lets us offer the user a one-step revert if they toggled by mistake.
+class EditorSnapshot {
+  final EditorMode mode;
+  final String plainText;
+  final String deltaJson;
+
+  const EditorSnapshot({
+    required this.mode,
+    required this.plainText,
+    required this.deltaJson,
+  });
+}
 
 /// Represents a single open file tab
 class EditorTab {
@@ -25,6 +40,10 @@ class EditorTab {
   String savedDeltaJson; // Last saved Delta JSON (for dirty detection in rich text)
   String tabFontFamily; // Per-tab font family (plain text and rich text default)
   double tabFontSize;   // Per-tab font size
+
+  /// Last pre-mode-toggle snapshot. Consumed once by revertModeToggle() and
+  /// cleared on any subsequent mode change or tab save.
+  EditorSnapshot? _preToggleSnapshot;
 
   EditorTab({
     this.filePath,
@@ -59,6 +78,29 @@ class EditorTab {
     } else {
       savedContent = controller.text;
     }
+    // A successful save invalidates any previous mode-toggle snapshot —
+    // once committed to disk, the "pre-toggle" content is no longer something
+    // we want to offer as a one-step revert.
+    _preToggleSnapshot = null;
+  }
+
+  EditorSnapshot? get preToggleSnapshot => _preToggleSnapshot;
+
+  /// Capture the current state before a destructive mode toggle.
+  void capturePreToggleSnapshot() {
+    _preToggleSnapshot = EditorSnapshot(
+      mode: mode,
+      plainText: controller.text,
+      deltaJson: deltaJson,
+    );
+  }
+
+  /// Apply a saved snapshot (used by EditorProvider.revertModeToggle).
+  void applySnapshot(EditorSnapshot snap) {
+    mode = snap.mode;
+    controller.text = snap.plainText;
+    deltaJson = snap.deltaJson;
+    _preToggleSnapshot = null;
   }
 
   /// Get the content to save (handles both modes)
@@ -136,8 +178,13 @@ class EditorProvider extends ChangeNotifier {
         }
         tab.markSaved();
         saved = true;
-      } catch (_) {
-        // Silent fail — auto-save should never interrupt the user
+      } catch (e) {
+        // Auto-save should never interrupt the user, but surfacing failures
+        // in the debug console means disk-full / permission issues aren't
+        // completely invisible during development and bug triage.
+        if (kDebugMode) {
+          debugPrint('Auto-save failed for ${tab.fileName}: $e');
+        }
       }
     }
     if (saved) notifyListeners();
@@ -273,7 +320,7 @@ class EditorProvider extends ChangeNotifier {
   }
 
   /// Open a .rtf file (already parsed to Delta JSON by caller)
-  void openRtfFile(String path, String deltaJson) {
+  Future<void> openRtfFile(String path, String deltaJson) async {
     // Check if already open
     final existingIndex = _tabs.indexWhere((t) => t.filePath == path);
     if (existingIndex != -1) {
@@ -307,7 +354,7 @@ class EditorProvider extends ChangeNotifier {
       _activeTabIndex = _tabs.length - 1;
     }
 
-    _settingsService.addRecentFile(path);
+    await _settingsService.addRecentFile(path);
     _cachedActiveText = null;
     notifyListeners();
   }
@@ -427,7 +474,9 @@ class EditorProvider extends ChangeNotifier {
     return true;
   }
 
-  /// Mark active tab as saved to a new path (used for RTF save)
+  /// Mark active tab as saved to a new path (used for RTF save).
+  /// Recent-files update is fire-and-forget — not waiting on Hive before
+  /// notifying listeners keeps the UI snappy on save.
   void markTabSavedAs(String path) {
     final tab = activeTab;
     if (tab == null) return;
@@ -436,7 +485,7 @@ class EditorProvider extends ChangeNotifier {
     tab.isEncrypted = false;
     tab.password = null;
     tab.markSaved();
-    _settingsService.addRecentFile(path);
+    unawaited(_settingsService.addRecentFile(path));
     notifyListeners();
   }
 
@@ -475,10 +524,14 @@ class EditorProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Toggle between plain text and rich text mode
+  /// Toggle between plain text and rich text mode.
+  /// Captures a one-step revert snapshot before any destructive conversion.
   void toggleEditorMode() {
     final tab = activeTab;
     if (tab == null) return;
+
+    // Snapshot before changing anything so revertModeToggle() can restore it.
+    tab.capturePreToggleSnapshot();
 
     if (tab.mode == EditorMode.plainText) {
       // Plain → Rich: Convert current text to unstyled Delta
@@ -505,6 +558,18 @@ class EditorProvider extends ChangeNotifier {
 
     _cachedActiveText = null;
     notifyListeners();
+  }
+
+  /// Revert the most recent mode toggle. Returns true if a revert was applied.
+  bool revertModeToggle() {
+    final tab = activeTab;
+    if (tab == null) return false;
+    final snap = tab.preToggleSnapshot;
+    if (snap == null) return false;
+    tab.applySnapshot(snap);
+    _cachedActiveText = null;
+    notifyListeners();
+    return true;
   }
 
   /// Update the delta JSON for the active tab (called by QuillEditor widget)
@@ -653,6 +718,15 @@ class EditorProvider extends ChangeNotifier {
       _cachedActiveText = null;
       notifyListeners();
     });
+  }
+
+  /// Force immediate cache invalidation without waiting for the debounce.
+  /// Used after operations that directly mutate controller text (replace-all)
+  /// so word/char/line counts don't lag behind the visible content.
+  void invalidateTextCache() {
+    _cachedActiveText = null;
+    _contentDebounce?.cancel();
+    notifyListeners();
   }
 
   String get _activeText {

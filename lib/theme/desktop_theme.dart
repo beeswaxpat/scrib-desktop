@@ -1,39 +1,59 @@
 import 'package:flutter/material.dart';
 import '../constants.dart';
+import 'scrib_colors.dart';
 
-/// Scrib Desktop theme - dark Blade Runner aesthetic with Scrib brand colors
+/// Scrib Desktop theme - dark Blade Runner aesthetic with Scrib brand colors.
+///
+/// Both [darkTheme] and [lightTheme] are memoized by accent color index so
+/// they don't allocate a fresh ThemeData on every editor-state change.
+/// For a typing-heavy app this matters — see main.dart _onEditorChanged.
 class ScribTheme {
+  static final Map<int, ThemeData> _darkCache = {};
+  static final Map<int, ThemeData> _lightCache = {};
+
   static ThemeData darkTheme({int accentColorIndex = 0}) {
-    final seedColor = accentColors[accentColorIndex.clamp(0, accentColors.length - 1)];
+    final idx = accentColorIndex.clamp(0, accentColors.length - 1);
+    return _darkCache.putIfAbsent(idx, () => _buildDark(idx));
+  }
+
+  static ThemeData lightTheme({int accentColorIndex = 0}) {
+    final idx = accentColorIndex.clamp(0, accentColors.length - 1);
+    return _lightCache.putIfAbsent(idx, () => _buildLight(idx));
+  }
+
+  static ThemeData _buildDark(int idx) {
+    final seedColor = accentColors[idx];
+    const colors = ScribColors.dark;
 
     return ThemeData(
       useMaterial3: true,
       brightness: Brightness.dark,
       colorSchemeSeed: seedColor,
-      scaffoldBackgroundColor: const Color(0xFF0D0D0D),
+      scaffoldBackgroundColor: colors.surface,
       fontFamily: 'Segoe UI',
-      appBarTheme: const AppBarTheme(
-        backgroundColor: Color(0xFF141414),
-        foregroundColor: Color(0xFFE0E0E0),
+      extensions: const [colors],
+      appBarTheme: AppBarTheme(
+        backgroundColor: colors.surfaceChrome,
+        foregroundColor: colors.textPrimary,
         elevation: 0,
         scrolledUnderElevation: 0,
       ),
-      cardTheme: const CardThemeData(
-        color: Color(0xFF1A1A1A),
+      cardTheme: CardThemeData(
+        color: colors.surfaceAccent,
         elevation: 0,
       ),
-      dividerTheme: const DividerThemeData(
-        color: Color(0xFF2A2A2A),
+      dividerTheme: DividerThemeData(
+        color: colors.border,
         thickness: 1,
       ),
-      menuBarTheme: const MenuBarThemeData(
+      menuBarTheme: MenuBarThemeData(
         style: MenuStyle(
-          backgroundColor: WidgetStatePropertyAll(Color(0xFF141414)),
+          backgroundColor: WidgetStatePropertyAll(colors.surfaceChrome),
         ),
       ),
       menuTheme: MenuThemeData(
         style: MenuStyle(
-          backgroundColor: const WidgetStatePropertyAll(Color(0xFF1E1E1E)),
+          backgroundColor: WidgetStatePropertyAll(colors.surfaceElevated),
           shape: WidgetStatePropertyAll(
             RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           ),
@@ -56,19 +76,20 @@ class ScribTheme {
         border: InputBorder.none,
         focusedBorder: InputBorder.none,
       ),
-      textTheme: const TextTheme(
-        bodyLarge: TextStyle(color: Color(0xFFE0E0E0), height: 1.6),
-        bodyMedium: TextStyle(color: Color(0xFFB0B0B0)),
-        bodySmall: TextStyle(color: Color(0xFF808080)),
-        titleLarge: TextStyle(color: Color(0xFFE0E0E0), fontWeight: FontWeight.w600),
-        titleMedium: TextStyle(color: Color(0xFFE0E0E0)),
-        labelSmall: TextStyle(color: Color(0xFF808080), fontSize: 11),
+      textTheme: TextTheme(
+        bodyLarge: TextStyle(color: colors.textPrimary, height: editorLineHeight),
+        bodyMedium: TextStyle(color: colors.textSecondary),
+        bodySmall: TextStyle(color: colors.textMuted),
+        titleLarge: TextStyle(color: colors.textPrimary, fontWeight: FontWeight.w600),
+        titleMedium: TextStyle(color: colors.textPrimary),
+        labelSmall: TextStyle(color: colors.textMuted, fontSize: 11),
       ),
     );
   }
 
-  static ThemeData lightTheme({int accentColorIndex = 0}) {
-    final seedColor = accentColors[accentColorIndex.clamp(0, accentColors.length - 1)];
+  static ThemeData _buildLight(int idx) {
+    final seedColor = accentColors[idx];
+    const colors = ScribColors.light;
 
     return ThemeData(
       useMaterial3: true,
@@ -76,28 +97,29 @@ class ScribTheme {
       colorSchemeSeed: seedColor,
       scaffoldBackgroundColor: const Color(0xFFFAFAFA),
       fontFamily: 'Segoe UI',
-      appBarTheme: const AppBarTheme(
-        backgroundColor: Color(0xFFFFFFFF),
-        foregroundColor: Color(0xFF1A1A1A),
+      extensions: const [colors],
+      appBarTheme: AppBarTheme(
+        backgroundColor: colors.surfaceElevated,
+        foregroundColor: colors.textPrimary,
         elevation: 0,
         scrolledUnderElevation: 0,
       ),
-      cardTheme: const CardThemeData(
-        color: Color(0xFFFFFFFF),
+      cardTheme: CardThemeData(
+        color: colors.surfaceElevated,
         elevation: 0,
       ),
-      dividerTheme: const DividerThemeData(
-        color: Color(0xFFE0E0E0),
+      dividerTheme: DividerThemeData(
+        color: colors.border,
         thickness: 1,
       ),
-      menuBarTheme: const MenuBarThemeData(
+      menuBarTheme: MenuBarThemeData(
         style: MenuStyle(
-          backgroundColor: WidgetStatePropertyAll(Color(0xFFF5F5F5)),
+          backgroundColor: WidgetStatePropertyAll(colors.surfaceAccent),
         ),
       ),
       menuTheme: MenuThemeData(
         style: MenuStyle(
-          backgroundColor: const WidgetStatePropertyAll(Color(0xFFFFFFFF)),
+          backgroundColor: WidgetStatePropertyAll(colors.surfaceElevated),
           shape: WidgetStatePropertyAll(
             RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           ),
@@ -120,13 +142,13 @@ class ScribTheme {
         border: InputBorder.none,
         focusedBorder: InputBorder.none,
       ),
-      textTheme: const TextTheme(
-        bodyLarge: TextStyle(color: Color(0xFF1A1A1A), height: 1.6),
-        bodyMedium: TextStyle(color: Color(0xFF444444)),
-        bodySmall: TextStyle(color: Color(0xFF666666)),
-        titleLarge: TextStyle(color: Color(0xFF1A1A1A), fontWeight: FontWeight.w600),
-        titleMedium: TextStyle(color: Color(0xFF1A1A1A)),
-        labelSmall: TextStyle(color: Color(0xFF666666), fontSize: 11),
+      textTheme: TextTheme(
+        bodyLarge: TextStyle(color: colors.textPrimary, height: editorLineHeight),
+        bodyMedium: const TextStyle(color: Color(0xFF444444)),
+        bodySmall: TextStyle(color: colors.textMuted),
+        titleLarge: TextStyle(color: colors.textPrimary, fontWeight: FontWeight.w600),
+        titleMedium: TextStyle(color: colors.textPrimary),
+        labelSmall: TextStyle(color: colors.textMuted, fontSize: 11),
       ),
     );
   }

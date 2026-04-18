@@ -359,14 +359,13 @@ class _ScribSearchBarState extends State<ScribSearchBar> {
       if (selection.isCollapsed) { _findNext(editor); return; }
       final selectedText = tab.controller.text.substring(selection.start, selection.end);
       if (selectedText.toLowerCase() == _searchController.text.toLowerCase()) {
-        final newText = tab.controller.text.replaceRange(
-          selection.start, selection.end, _replaceController.text,
+        _replaceRangePreservingUndo(
+          tab,
+          start: selection.start,
+          end: selection.end,
+          replacement: _replaceController.text,
         );
-        tab.controller.text = newText;
-        tab.controller.selection = TextSelection.collapsed(
-          offset: selection.start + _replaceController.text.length,
-        );
-        editor.onContentChanged();
+        editor.invalidateTextCache();
         _updateMatchCount(editor);
         _findNext(editor);
       }
@@ -389,16 +388,48 @@ class _ScribSearchBarState extends State<ScribSearchBar> {
       for (int i = matches.length - 1; i >= 0; i--) {
         widget.quillController!.replaceText(matches[i], query.length, _replaceController.text, null);
       }
-      if (matches.isNotEmpty) { editor.onContentChanged(); _updateMatchCount(editor); }
+      if (matches.isNotEmpty) {
+        editor.invalidateTextCache();
+        _updateMatchCount(editor);
+      }
     } else {
       final newText = tab.controller.text.replaceAll(
         RegExp(RegExp.escape(_searchController.text), caseSensitive: false),
         _replaceController.text,
       );
-      tab.controller.text = newText;
-      editor.onContentChanged();
+      _replaceAllPreservingUndo(tab, newText: newText);
+      editor.invalidateTextCache();
       _updateMatchCount(editor);
     }
+  }
+
+  /// Use [TextEditingValue] instead of `controller.text = ...` so the change
+  /// participates in the framework's undo history and the cursor lands in a
+  /// predictable position after the replacement.
+  void _replaceRangePreservingUndo(
+    EditorTab tab, {
+    required int start,
+    required int end,
+    required String replacement,
+  }) {
+    final oldText = tab.controller.text;
+    final newText =
+        oldText.substring(0, start) + replacement + oldText.substring(end);
+    tab.controller.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: start + replacement.length),
+    );
+  }
+
+  void _replaceAllPreservingUndo(EditorTab tab, {required String newText}) {
+    final oldSelection = tab.controller.selection;
+    tab.controller.value = TextEditingValue(
+      text: newText,
+      // Collapse selection to end of content if the previous cursor is out of range.
+      selection: oldSelection.baseOffset <= newText.length
+          ? oldSelection
+          : TextSelection.collapsed(offset: newText.length),
+    );
   }
 }
 
@@ -419,20 +450,25 @@ class _SearchButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      waitDuration: const Duration(milliseconds: 600),
-      child: InkWell(
-        onTap: onPressed,
-        borderRadius: BorderRadius.circular(4),
-        child: Padding(
-          padding: const EdgeInsets.all(4),
-          child: Icon(
-            icon,
-            size: 16,
-            color: onPressed == null
-                ? (isDark ? const Color(0xFF333333) : const Color(0xFFDDDDDD))
-                : (isDark ? const Color(0xFF808080) : const Color(0xFF666666)),
+    return Semantics(
+      label: tooltip,
+      button: true,
+      enabled: onPressed != null,
+      child: Tooltip(
+        message: tooltip,
+        waitDuration: const Duration(milliseconds: 600),
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(4),
+          child: Padding(
+            padding: const EdgeInsets.all(4),
+            child: Icon(
+              icon,
+              size: 16,
+              color: onPressed == null
+                  ? (isDark ? const Color(0xFF333333) : const Color(0xFFDDDDDD))
+                  : (isDark ? const Color(0xFF808080) : const Color(0xFF666666)),
+            ),
           ),
         ),
       ),

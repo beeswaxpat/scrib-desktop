@@ -774,21 +774,27 @@ class _FormatButton extends StatelessWidget {
             ? activeColor
             : (isDark ? const Color(0xFFB0B0B0) : const Color(0xFF555555));
 
-    return Tooltip(
-      message: tooltip,
-      waitDuration: const Duration(milliseconds: 500),
-      child: InkWell(
-        onTap: onPressed,
-        borderRadius: BorderRadius.circular(4),
-        child: Container(
-          padding: const EdgeInsets.all(5),
-          decoration: isActive
-              ? BoxDecoration(
-                  color: activeColor.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(4),
-                )
-              : null,
-          child: Icon(icon, size: 17, color: color),
+    return Semantics(
+      label: tooltip,
+      button: true,
+      enabled: !isDisabled,
+      toggled: isActive,
+      child: Tooltip(
+        message: tooltip,
+        waitDuration: const Duration(milliseconds: 500),
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(4),
+          child: Container(
+            padding: const EdgeInsets.all(5),
+            decoration: isActive
+                ? BoxDecoration(
+                    color: activeColor.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(4),
+                  )
+                : null,
+            child: Icon(icon, size: 17, color: color),
+          ),
         ),
       ),
     );

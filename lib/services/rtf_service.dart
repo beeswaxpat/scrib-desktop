@@ -4,9 +4,19 @@ import 'dart:convert';
 ///
 /// Supports: bold, italic, underline, strikethrough, font family, font size,
 /// headers, bullet lists, numbered lists, and block quotes.
+///
+/// RTF parsing is best-effort. The parser handles the subset of RTF produced
+/// by Word, WordPad, and LibreOffice for simple documents — complex features
+/// (nested tables, images, styles, Unicode \uN escapes beyond BMP, custom
+/// color tables) pass through as stripped text. For a byte-perfect RTF
+/// exchange, use a dedicated library in a future revision.
+///
+/// All methods are static — RtfService carries no state.
 class RtfService {
+  RtfService._();
+
   /// Convert Quill Delta JSON string to RTF string
-  String deltaToRtf(String deltaJson) {
+  static String deltaToRtf(String deltaJson) {
     if (deltaJson.isEmpty) return _wrapRtf('');
 
     final ops = jsonDecode(deltaJson) as List<dynamic>;
@@ -91,7 +101,7 @@ class RtfService {
   }
 
   /// Parse RTF string to Quill Delta JSON string
-  String rtfToDelta(String rtfContent) {
+  static String rtfToDelta(String rtfContent) {
     if (rtfContent.isEmpty || !rtfContent.startsWith('{\\rtf')) {
       // Not RTF, treat as plain text
       return jsonEncode([
@@ -174,7 +184,7 @@ class RtfService {
     return jsonEncode(ops);
   }
 
-  void _parseRtfContent(String content, List<Map<String, dynamic>> ops, Map<int, String> fonts) {
+  static void _parseRtfContent(String content, List<Map<String, dynamic>> ops, Map<int, String> fonts) {
     bool bold = false;
     bool italic = false;
     bool underline = false;
@@ -328,7 +338,7 @@ class RtfService {
     flushText();
   }
 
-  String _inlineFormatting(Map<String, dynamic> attrs, List<String> fontList) {
+  static String _inlineFormatting(Map<String, dynamic> attrs, List<String> fontList) {
     if (attrs.isEmpty) return '';
 
     final buf = StringBuffer('{');
@@ -350,12 +360,12 @@ class RtfService {
     return buf.toString();
   }
 
-  String _inlineFormattingClose(Map<String, dynamic> attrs) {
+  static String _inlineFormattingClose(Map<String, dynamic> attrs) {
     if (attrs.isEmpty) return '';
     return '}';
   }
 
-  String _blockFormattingOpen(Map<String, dynamic> attrs) {
+  static String _blockFormattingOpen(Map<String, dynamic> attrs) {
     if (attrs.containsKey('header')) {
       final level = attrs['header'];
       if (level is int && level >= 1 && level <= 6) {
@@ -374,7 +384,7 @@ class RtfService {
     return '';
   }
 
-  String _blockFormattingClose(Map<String, dynamic> attrs) {
+  static String _blockFormattingClose(Map<String, dynamic> attrs) {
     if (attrs.containsKey('header') ||
         attrs.containsKey('blockquote') ||
         attrs.containsKey('list')) {
@@ -383,14 +393,14 @@ class RtfService {
     return '';
   }
 
-  String _wrapRtf(String content, {String fontTable = '{\\fonttbl{\\f0\\fswiss Times New Roman;}}'}) {
+  static String _wrapRtf(String content, {String fontTable = '{\\fonttbl{\\f0\\fswiss Times New Roman;}}'}) {
     return '{\\rtf1\\ansi\\deff0\n'
         '$fontTable\n'
         '$content\n'
         '}';
   }
 
-  String _escapeRtf(String text) {
+  static String _escapeRtf(String text) {
     final buf = StringBuffer();
     for (final codeUnit in text.codeUnits) {
       if (codeUnit == 0x5C) { // backslash
