@@ -2,7 +2,7 @@ name: scrib_desktop
 description: "The encrypted Notepad. No tracking. No cloud. Just notes."
 publish_to: 'none'
 
-version: 1.1.0+2
+version: 1.2.0+3
 
 environment:
   sdk: ^3.10.7
@@ -11,7 +11,7 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # Local storage - encrypted settings
+  # Local storage - settings persistence
   hive: ^2.2.3
 
   # State management
@@ -21,8 +21,10 @@ dependencies:
   path_provider: ^2.1.5
   file_picker: ^8.1.6
 
-  # Encryption
-  encrypt: ^5.0.3
+  # FFI — used for Windows atomic file replace (MoveFileExW)
+  ffi: ^2.1.0
+
+  # Encryption — AES-256-CBC, PBKDF2-SHA256, HMAC-SHA256
   pointycastle: ^3.9.1
 
   # Rich text editor
@@ -36,8 +38,6 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
-  hive_generator: ^2.0.1
-  build_runner: ^2.4.13
 
 flutter:
   uses-material-design: true

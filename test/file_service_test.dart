@@ -1,0 +1,223 @@
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:scrib_desktop/constants.dart';
+import 'package:scrib_desktop/services/file_service.dart';
+
+/// Tests for the .scrb v2 file format and plaintext .txt I/O.
+///
+/// These tests protect the most important promise we make to users: an
+/// encrypted file written by any 1.x build must decrypt to the same
+/// plaintext in any subsequent 1.x build, using the same password.
+void main() {
+  late FileService fs;
+  late Directory tmp;
+
+  setUp(() async {
+    fs = FileService();
+    tmp = await Directory.systemTemp.createTemp('scrib_test_');
+  });
+
+  tearDown(() async {
+    try {
+      await tmp.delete(recursive: true);
+    } catch (_) {}
+  });
+
+  String path(String name) => '${tmp.path}${Platform.pathSeparator}$name';
+
+  group('.scrb encryption round-trip', () {
+    test('basic encrypt → decrypt returns original plaintext', () async {
+      const content = 'Hello, Scrib!';
+      const password = 'correct horse battery staple';
+      final p = path('basic.scrb');
+
+      await fs.writeScrbFile(p, content, password);
+      final decrypted = await fs.readScrbFile(p, password);
+      expect(decrypted, content);
+    });
+
+    test('wrong password returns null (not a crash)', () async {
+      const content = 'secret';
+      final p = path('wrong.scrb');
+
+      await fs.writeScrbFile(p, content, 'real-password-123');
+      expect(await fs.readScrbFile(p, 'wrong-password'), isNull);
+    });
+
+    test('tampered ciphertext returns null (HMAC rejects)', () async {
+      const content = 'integrity matters';
+      const password = 'tamper-test-password';
+      final p = path('tamper.scrb');
+
+      await fs.writeScrbFile(p, content, password);
+      final bytes = await File(p).readAsBytes();
+      // Flip a single bit in the ciphertext body (after the 85-byte header).
+      final tampered = Uint8List.fromList(bytes);
+      tampered[100] ^= 0x01;
+      await File(p).writeAsBytes(tampered);
+
+      expect(await fs.readScrbFile(p, password), isNull);
+    });
+
+    test('tampered IV returns null (HMAC covers IV)', () async {
+      const content = 'iv protection';
+      const password = 'hmac-covers-iv-test';
+      final p = path('iv_tamper.scrb');
+
+      await fs.writeScrbFile(p, content, password);
+      final bytes = await File(p).readAsBytes();
+      final tampered = Uint8List.fromList(bytes);
+      // Flip the first byte of the IV (offset 5).
+      tampered[5] ^= 0xFF;
+      await File(p).writeAsBytes(tampered);
+
+      expect(await fs.readScrbFile(p, password), isNull);
+    });
+
+    test('tampered salt returns null (HMAC covers salt)', () async {
+      const content = 'salt protection';
+      const password = 'hmac-covers-salt-test';
+      final p = path('salt_tamper.scrb');
+
+      await fs.writeScrbFile(p, content, password);
+      final bytes = await File(p).readAsBytes();
+      final tampered = Uint8List.fromList(bytes);
+      tampered[21] ^= 0xFF; // first byte of salt
+      await File(p).writeAsBytes(tampered);
+
+      expect(await fs.readScrbFile(p, password), isNull);
+    });
+
+    test('magic bytes mismatch returns null (not a .scrb file)', () async {
+      final p = path('fake.scrb');
+      await File(p).writeAsBytes([0, 0, 0, 0, 2, 0, 0, 0, 0]);
+      expect(await fs.readScrbFile(p, 'any-password'), isNull);
+    });
+
+    test('file shorter than header returns null', () async {
+      final p = path('short.scrb');
+      await File(p).writeAsBytes([0x53, 0x43, 0x52, 0x42]); // magic only
+      expect(await fs.readScrbFile(p, 'anything'), isNull);
+    });
+
+    test('empty content round-trips (writes a newline internally)', () async {
+      const password = 'empty-content-ok';
+      final p = path('empty.scrb');
+
+      await fs.writeScrbFile(p, '', password);
+      // v1.1.x used a '\n' workaround for empty content; preserved for
+      // backward compatibility with already-saved user files.
+      expect(await fs.readScrbFile(p, password), '\n');
+    });
+
+    test('large content (1MB+) round-trips', () async {
+      final content = 'x' * (1024 * 1024 + 7); // 1MB + 7 bytes
+      const password = 'big-file-password';
+      final p = path('large.scrb');
+
+      await fs.writeScrbFile(p, content, password);
+      expect(await fs.readScrbFile(p, password), content);
+    });
+
+    test('unicode content round-trips', () async {
+      const content = 'Hello 世界 🔒 Здравствуй мир';
+      const password = 'unicode-password-öñ';
+      final p = path('unicode.scrb');
+
+      await fs.writeScrbFile(p, content, password);
+      expect(await fs.readScrbFile(p, password), content);
+    });
+
+    test('each save uses fresh IV and salt (no deterministic ciphertext)', () async {
+      const content = 'same plaintext';
+      const password = 'same-password';
+      final p1 = path('rand1.scrb');
+      final p2 = path('rand2.scrb');
+
+      await fs.writeScrbFile(p1, content, password);
+      await fs.writeScrbFile(p2, content, password);
+
+      final b1 = await File(p1).readAsBytes();
+      final b2 = await File(p2).readAsBytes();
+
+      // Magic + version should be identical; everything else must differ.
+      expect(b1.sublist(0, 5), b2.sublist(0, 5)); // magic + version
+      expect(b1.sublist(5, 21), isNot(equals(b2.sublist(5, 21)))); // IV
+      expect(b1.sublist(21, 53), isNot(equals(b2.sublist(21, 53)))); // salt
+      expect(b1.sublist(53, 85), isNot(equals(b2.sublist(53, 85)))); // HMAC
+    });
+
+    test('.scrb byte layout matches documented format', () async {
+      const content = 'format check';
+      const password = 'format-check-password';
+      final p = path('layout.scrb');
+
+      await fs.writeScrbFile(p, content, password);
+      final bytes = await File(p).readAsBytes();
+
+      expect(bytes.sublist(0, 4), scrbMagic); // SCRB
+      expect(bytes[4], scrbVersionV2);
+      expect(bytes.length, greaterThanOrEqualTo(85 + 16));
+    });
+
+    test('isScrbFile detects magic bytes', () async {
+      final scrbPath = path('real.scrb');
+      final txtPath = path('plain.txt');
+
+      await fs.writeScrbFile(scrbPath, 'hello', 'password-here');
+      await fs.writeTxtFile(txtPath, 'hello');
+
+      expect(await fs.isScrbFile(scrbPath), isTrue);
+      expect(await fs.isScrbFile(txtPath), isFalse);
+    });
+  });
+
+  group('plaintext .txt round-trip', () {
+    test('write then read returns same content', () async {
+      const content = 'plain text note\nwith multiple\nlines';
+      final p = path('note.txt');
+
+      await fs.writeTxtFile(p, content);
+      expect(await fs.readTxtFile(p), content);
+    });
+
+    test('atomic write over existing file succeeds', () async {
+      final p = path('existing.txt');
+
+      await fs.writeTxtFile(p, 'version 1');
+      await fs.writeTxtFile(p, 'version 2');
+
+      expect(await fs.readTxtFile(p), 'version 2');
+    });
+
+    test('utf-8 content round-trips', () async {
+      const content = 'Zażółć gęślą jaźń — 中文 — ñ ö ü';
+      final p = path('unicode.txt');
+
+      await fs.writeTxtFile(p, content);
+      expect(await fs.readTxtFile(p), content);
+    });
+
+    test('read of non-existent file throws ScribFileReadException', () async {
+      expect(
+        () => fs.readTxtFile(path('does-not-exist.txt')),
+        throwsA(isA<ScribFileReadException>()),
+      );
+    });
+  });
+
+  group('path helpers', () {
+    test('getExtension returns lowercase extension with dot', () {
+      expect(fs.getExtension('note.TXT'), '.txt');
+      expect(fs.getExtension('archive.tar.gz'), '.gz');
+      expect(fs.getExtension('no-extension'), '');
+    });
+
+    test('getFileName strips directory prefix', () {
+      final pSep = Platform.pathSeparator;
+      expect(fs.getFileName('C:${pSep}Users${pSep}test${pSep}file.txt'), 'file.txt');
+      expect(fs.getFileName('file.txt'), 'file.txt');
+    });
+  });
+}

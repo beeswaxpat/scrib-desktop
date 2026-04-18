@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 import 'constants.dart';
+import 'services/atomic_write.dart';
 import 'services/file_service.dart';
 import 'services/settings_service.dart';
 import 'providers/editor_provider.dart';
@@ -32,6 +33,13 @@ void main() async {
         // Silently fail if desktop path doesn't exist
       }
     }
+  }
+
+  // Best-effort recovery of any stranded .tmp/.bak files from a prior crash.
+  // Safe no-op on clean startup. Runs only against the user's save location
+  // so we never touch files outside the app's working directory.
+  if (settingsService.defaultSaveLocation.isNotEmpty) {
+    unawaited(AtomicWrite.recoverIfNeeded(settingsService.defaultSaveLocation));
   }
 
   final fileService = FileService();

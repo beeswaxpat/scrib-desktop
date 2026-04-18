@@ -2,12 +2,12 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
-import 'package:encrypt/encrypt.dart' as encrypt;
 import 'package:flutter/foundation.dart' show compute;
 import 'package:pointycastle/export.dart' as pc;
 import '../constants.dart';
+import 'atomic_write.dart';
 
-// Top-level functions run in a background isolate via compute().
+// ── Isolate helpers ─────────────────────────────────────────────────────────
 
 Uint8List _pbkdf2(String password, Uint8List salt, int iterations, int keyLen) {
   final pbkdf2 = pc.PBKDF2KeyDerivator(pc.HMac(pc.SHA256Digest(), 64));
@@ -36,32 +36,56 @@ void _zero(Uint8List b) {
   }
 }
 
+Uint8List _aesCbcEncrypt(Uint8List key, Uint8List iv, Uint8List plaintext) {
+  final cipher = pc.PaddedBlockCipherImpl(
+    pc.PKCS7Padding(),
+    pc.CBCBlockCipher(pc.AESEngine()),
+  );
+  final params = pc.PaddedBlockCipherParameters<pc.CipherParameters, pc.CipherParameters>(
+    pc.ParametersWithIV<pc.KeyParameter>(pc.KeyParameter(key), iv),
+    null,
+  );
+  cipher.init(true, params);
+  return cipher.process(plaintext);
+}
+
+Uint8List _aesCbcDecrypt(Uint8List key, Uint8List iv, Uint8List ciphertext) {
+  final cipher = pc.PaddedBlockCipherImpl(
+    pc.PKCS7Padding(),
+    pc.CBCBlockCipher(pc.AESEngine()),
+  );
+  final params = pc.PaddedBlockCipherParameters<pc.CipherParameters, pc.CipherParameters>(
+    pc.ParametersWithIV<pc.KeyParameter>(pc.KeyParameter(key), iv),
+    null,
+  );
+  cipher.init(false, params);
+  return cipher.process(ciphertext);
+}
+
 /// Encrypt content → .scrb v2 file bytes.  Called via compute().
+/// Byte layout is unchanged from v1.1.x — existing files remain readable.
 Uint8List _doEncrypt(Map<String, dynamic> p) {
   final content  = p['content'] as String;
   final password = p['password'] as String;
   final iv       = p['iv'] as Uint8List;
   final salt     = p['salt'] as Uint8List;
 
-  final km     = _pbkdf2(password, salt, 100000, 64);
+  final km     = _pbkdf2(password, salt, scrbPbkdf2Iterations, scrbKeyMaterialLength);
   final encKey = Uint8List.fromList(km.sublist(0, 32));
   final macKey = Uint8List.fromList(km.sublist(32, 64));
 
-  final encrypter = encrypt.Encrypter(
-    encrypt.AES(encrypt.Key(encKey), mode: encrypt.AESMode.cbc),
-  );
-  final ct = encrypter.encrypt(content, iv: encrypt.IV(iv)).bytes;
+  final ct = _aesCbcEncrypt(encKey, iv, Uint8List.fromList(utf8.encode(content)));
 
   final auth = BytesBuilder()
-    ..addByte(0x02)
+    ..addByte(scrbVersionV2)
     ..add(iv)
     ..add(salt)
     ..add(ct);
   final hmac = _hmacSha256(macKey, auth.toBytes());
 
   final out = BytesBuilder()
-    ..add([0x53, 0x43, 0x52, 0x42])
-    ..addByte(0x02)
+    ..add(scrbMagic)
+    ..addByte(scrbVersionV2)
     ..add(iv)
     ..add(salt)
     ..add(hmac)
@@ -73,36 +97,38 @@ Uint8List _doEncrypt(Map<String, dynamic> p) {
   return out.toBytes();
 }
 
-/// Decrypt .scrb file bytes → plaintext (or null).  Called via compute().
+/// Decrypt .scrb file bytes → plaintext (or null on wrong password / tamper).
+/// Called via compute().
 String? _doDecrypt(Map<String, dynamic> p) {
   final bytes    = p['bytes'] as Uint8List;
   final password = p['password'] as String;
+  if (bytes.length < 5) return null;
   final version  = bytes[4];
 
-  if (version == 0x02) {
-    if (bytes.length < 86) return null;
+  if (version == scrbVersionV2) {
+    // Header: [magic 4][ver 1][iv 16][salt 32][hmac 32] = 85 bytes.
+    // Ciphertext must be at least one AES block (16 bytes) after padding.
+    if (bytes.length < 85 + 16) return null;
     final iv   = Uint8List.fromList(bytes.sublist(5, 21));
     final salt = Uint8List.fromList(bytes.sublist(21, 53));
     final mac  = Uint8List.fromList(bytes.sublist(53, 85));
     final ct   = Uint8List.fromList(bytes.sublist(85));
     if (ct.isEmpty) return null;
 
-    final km     = _pbkdf2(password, salt, 100000, 64);
+    final km     = _pbkdf2(password, salt, scrbPbkdf2Iterations, scrbKeyMaterialLength);
     final encKey = Uint8List.fromList(km.sublist(0, 32));
     final macKey = Uint8List.fromList(km.sublist(32, 64));
     try {
       final auth = BytesBuilder()
-        ..addByte(0x02)
+        ..addByte(version)
         ..add(iv)
         ..add(salt)
         ..add(ct);
       if (!_constantTimeEq(mac, _hmacSha256(macKey, auth.toBytes()))) {
         return null;
       }
-      final d = encrypt.Encrypter(
-        encrypt.AES(encrypt.Key(encKey), mode: encrypt.AESMode.cbc),
-      );
-      return d.decrypt(encrypt.Encrypted(ct), iv: encrypt.IV(iv));
+      final plaintext = _aesCbcDecrypt(encKey, iv, ct);
+      return utf8.decode(plaintext);
     } catch (_) {
       return null;
     } finally {
@@ -114,30 +140,59 @@ String? _doDecrypt(Map<String, dynamic> p) {
   return null;
 }
 
+// ── Exceptions ──────────────────────────────────────────────────────────────
+
+/// Thrown when the file can't be read from disk (I/O error).
+class ScribFileReadException implements Exception {
+  final String path;
+  ScribFileReadException(this.path);
+  @override
+  String toString() => 'Could not read file';
+}
+
+/// Thrown when the file can't be written to disk (disk full, permissions).
+class ScribFileWriteException implements Exception {
+  final String path;
+  ScribFileWriteException(this.path);
+  @override
+  String toString() => 'Could not save file';
+}
+
+// ── Service ─────────────────────────────────────────────────────────────────
+
 /// Handles .txt, .rtf, and .scrb file I/O.
 ///
 /// .scrb v2 format: [SCRB 4B][ver 1B][IV 16B][salt 32B][HMAC 32B][ciphertext]
 /// Key derivation: PBKDF2-SHA256, 100k iterations, 64-byte output (32 enc + 32 mac).
+///
+/// All writes are atomic on Windows via MoveFileExW — see atomic_write.dart.
 class FileService {
   /// Read a plaintext .txt file
-  Future<String> readTxtFile(String path) async =>
-      File(path).readAsString(encoding: utf8);
-
-  /// Write a plaintext .txt file (atomic: write temp, then rename)
-  Future<void> writeTxtFile(String path, String content) async {
-    final tmp = File('$path.tmp');
+  Future<String> readTxtFile(String path) async {
     try {
-      await tmp.writeAsString(content, encoding: utf8, flush: true);
-      await tmp.rename(path);
-    } catch (e) {
-      if (await tmp.exists()) await tmp.delete();
-      rethrow;
+      return await File(path).readAsString(encoding: utf8);
+    } catch (_) {
+      throw ScribFileReadException(path);
     }
   }
 
-  /// Read and decrypt a .scrb v2 file. Returns null on wrong password.
+  /// Write a plaintext .txt file atomically.
+  Future<void> writeTxtFile(String path, String content) async {
+    try {
+      await AtomicWrite.writeString(path, content);
+    } catch (_) {
+      throw ScribFileWriteException(path);
+    }
+  }
+
+  /// Read and decrypt a .scrb v2 file. Returns null on wrong password or tamper.
   Future<String?> readScrbFile(String path, String password) async {
-    final bytes = await File(path).readAsBytes();
+    final Uint8List bytes;
+    try {
+      bytes = await File(path).readAsBytes();
+    } catch (_) {
+      throw ScribFileReadException(path);
+    }
     if (bytes.length < 5) return null;
     if (bytes[0] != scrbMagic[0] || bytes[1] != scrbMagic[1] ||
         bytes[2] != scrbMagic[2] || bytes[3] != scrbMagic[3]) {
@@ -146,18 +201,19 @@ class FileService {
     return compute(_doDecrypt, {'bytes': bytes, 'password': password});
   }
 
-  /// Encrypt and write a .scrb v2 file (atomic write).
+  /// Encrypt and write a .scrb v2 file atomically.
   Future<void> writeScrbFile(String path, String content, String password) async {
     // AES-CBC + PKCS7 can misbehave with empty strings; use a newline as minimum.
+    // Backward-compatible with v1.1.x: existing empty encrypted files remain readable.
     final safe = content.isEmpty ? '\n' : content;
 
     final rng  = Random.secure();
-    final iv   = Uint8List(16);
-    final salt = Uint8List(32);
-    for (int i = 0; i < 16; i++) {
+    final iv   = Uint8List(scrbIvLength);
+    final salt = Uint8List(scrbSaltLength);
+    for (int i = 0; i < scrbIvLength; i++) {
       iv[i] = rng.nextInt(256);
     }
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; i < scrbSaltLength; i++) {
       salt[i] = rng.nextInt(256);
     }
 
@@ -168,19 +224,21 @@ class FileService {
       'salt': salt,
     });
 
-    final tmp = File('$path.tmp');
     try {
-      await tmp.writeAsBytes(fileBytes, flush: true);
-      await tmp.rename(path);
-    } catch (e) {
-      if (await tmp.exists()) await tmp.delete();
-      rethrow;
+      await AtomicWrite.writeBytes(path, fileBytes);
+    } catch (_) {
+      throw ScribFileWriteException(path);
     }
   }
 
   /// Read a .rtf file. Tries UTF-8; falls back to Latin-1 for Word-style files.
   Future<String> readRtfFile(String path) async {
-    final bytes = await File(path).readAsBytes();
+    final Uint8List bytes;
+    try {
+      bytes = await File(path).readAsBytes();
+    } catch (_) {
+      throw ScribFileReadException(path);
+    }
     try {
       return utf8.decode(bytes);
     } catch (_) {
@@ -188,15 +246,12 @@ class FileService {
     }
   }
 
-  /// Write a .rtf file (atomic: write temp, then rename)
+  /// Write a .rtf file atomically.
   Future<void> writeRtfFile(String path, String content) async {
-    final tmp = File('$path.tmp');
     try {
-      await tmp.writeAsString(content, encoding: utf8, flush: true);
-      await tmp.rename(path);
-    } catch (e) {
-      if (await tmp.exists()) await tmp.delete();
-      rethrow;
+      await AtomicWrite.writeString(path, content);
+    } catch (_) {
+      throw ScribFileWriteException(path);
     }
   }
 

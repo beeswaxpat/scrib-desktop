@@ -2,13 +2,31 @@ import 'package:flutter/material.dart';
 
 /// Scrib brand constants
 const String appName = 'Scrib';
-const String appVersion = '1.1.0';
+const String appVersion = '1.2.0';
 const String appTagline = 'No tracking. No cloud. Just notes.';
 
 /// .scrb file format magic bytes
 const List<int> scrbMagic = [0x53, 0x43, 0x52, 0x42]; // "SCRB"
 const int scrbVersionV2 = 0x02; // AES-256-CBC + HMAC-SHA256 (Encrypt-then-MAC), 100k PBKDF2
 const int scrbCurrentVersion = scrbVersionV2;
+
+/// Crypto parameters — DO NOT CHANGE without bumping scrbCurrentVersion.
+/// These values are baked into existing .scrb files on users' disks.
+const int scrbPbkdf2Iterations = 100000;
+const int scrbKeyMaterialLength = 64; // 32 bytes enc + 32 bytes mac
+const int scrbIvLength = 16;          // AES block size
+const int scrbSaltLength = 32;        // PBKDF2 salt
+const int scrbHmacLength = 32;        // SHA-256 output
+
+/// UI constants extracted from widgets for consistency
+const double editorLineHeight = 1.6;
+const double defaultFontSize = 14.0;
+const double minFontSize = 8.0;
+const double maxFontSize = 48.0;
+const double customFontSizeMin = 6.0;
+const double customFontSizeMax = 144.0;
+const double accentBorderAlpha = 0.45;
+const double editorContentPadding = 16.0;
 
 /// Note colors palette - 16 research-backed colors (shared with mobile)
 const List<Color> noteColors = [
