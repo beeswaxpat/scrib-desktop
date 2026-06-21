@@ -4,6 +4,61 @@ All notable changes to Scrib Desktop are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] — 2026-06-20 — Data-integrity & format hardening
+
+A correctness / safety pass focused on data loss, an encryption-downgrade bug,
+RTF fidelity, and a self-describing encrypted-file format. **Every existing
+`.scrb` file still decrypts** — v2 files are read by a preserved v2 code path.
+Files saved by 1.3.0 use the new v3 format and require 1.3.0 or later to open.
+
+### Security / data integrity
+- **Encryption-downgrade fix.** Reopening an already-open encrypted tab no
+  longer leaves it flagged as plaintext, which previously could cause the next
+  save to write the decrypted contents to disk **unencrypted**. Now covered by
+  a regression test.
+- **Crash-recovery no longer touches your files.** Recovery previously deleted
+  *any* `*.tmp` and rewrote *any* `*.bak` in the save folder. Staging/backup
+  files now use Scrib-specific suffixes (`.scrib-tmp` / `.scrib-bak`), and a
+  backup is kept (not discarded) when the primary looks truncated.
+- **`.scrb` v3 format with self-describing, authenticated KDF parameters.** The
+  PBKDF2 iteration count and KDF id are now stored in the header and covered by
+  the HMAC, so the work factor can be raised in a future release without
+  breaking any existing file and a tampered parameter is rejected before key
+  derivation is trusted. (The default count is unchanged for now; raising it is
+  a one-line change once per-session key caching lands.)
+- **Per-destination write serialization.** Overlapping saves to the same file
+  (rapid Ctrl+S, auto-save racing a manual save) can no longer interleave.
+
+### Fixed
+- **Auto-save no longer corrupts `.rtf` files.** Rich-text `.rtf` tabs are now
+  auto-saved as real RTF instead of having the internal `scrib_rich` JSON
+  envelope written into them.
+- **RTF non-ASCII round-trip.** `\uN` escapes are now emitted as signed 16-bit
+  values (so CJK and astral characters such as emoji are no longer corrupted),
+  surrogate pairs are handled, `\uN` is decoded on import, `\ul0` is honored as
+  "underline off", and `\'XX` bytes are mapped through the Windows-1252 table.
+- **Malformed Delta no longer throws** during RTF export — it falls back to
+  escaped plain text.
+
+### UX
+- **Save & Quit.** Closing the window with unsaved changes now offers to save
+  everything first; it refuses to quit if any tab still needs a filename or
+  password rather than silently discarding work.
+- **Dirty untitled tabs prompt before closing** instead of being dropped
+  silently.
+- Drag-and-drop now filters unsupported files and folders with a clear message.
+
+### Internal / quality
+- Password dialogs are now `StatefulWidget`s that own and dispose their
+  controllers and focus nodes (no per-keystroke `FocusNode` leak).
+- `MoveFileExW` pointers are freed with the matching allocator.
+- Font-size limits and the custom-size dialog are unified on the shared
+  constants; the duplicate toolbar dialog was removed.
+- **Test suite grown from 65 to 200+** covering the v2/v3 crypto matrix,
+  atomic-write recovery (including false-positive guards), RTF fidelity, the
+  save/save-as decision tree, settings, and widget behavior.
+- Added `SECURITY.md` with a private vulnerability-disclosure policy.
+
 ## [1.2.0] — 2026-04-17 — Hardening pass
 
 This release is a correctness / safety / maintainability pass. **The `.scrb`

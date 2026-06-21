@@ -11,6 +11,9 @@ import 'providers/editor_provider.dart';
 import 'screens/main_screen.dart';
 import 'theme/desktop_theme.dart';
 
+/// User's choice in the quit-with-unsaved-changes dialog.
+enum _QuitChoice { cancel, discard, save }
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -145,24 +148,51 @@ class _ScribDesktopAppState extends State<ScribDesktopApp> with WindowListener {
     if (widget.editorProvider.hasUnsavedChanges) {
       final context = _navigatorKey.currentContext;
       if (context != null) {
-        final result = await showDialog<bool>(
+        final result = await showDialog<_QuitChoice>(
           context: context,
           builder: (ctx) => AlertDialog(
             title: const Text('Unsaved Changes'),
-            content: const Text('You have unsaved changes. Discard and quit?'),
+            content: const Text(
+              'You have unsaved changes. Save them before quitting?',
+            ),
             actions: [
               TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
+                onPressed: () => Navigator.pop(ctx, _QuitChoice.cancel),
                 child: const Text('Cancel'),
               ),
-              FilledButton(
-                onPressed: () => Navigator.pop(ctx, true),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, _QuitChoice.discard),
                 child: const Text('Discard & Quit'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, _QuitChoice.save),
+                child: const Text('Save & Quit'),
               ),
             ],
           ),
         );
-        if (result != true) return;
+        if (result == null || result == _QuitChoice.cancel) return;
+        if (result == _QuitChoice.save) {
+          // Save everything we safely can. If anything remains unsaved (an
+          // untitled tab, or an encrypted tab with no password), don't quit —
+          // surface it so the user can finish rather than lose work.
+          final allSaved = await widget.editorProvider.saveAllSaveable();
+          if (!allSaved) {
+            final c = _navigatorKey.currentContext;
+            if (c != null && c.mounted) {
+              ScaffoldMessenger.of(c).showSnackBar(
+                const SnackBar(
+                  content: Text(
+                    'Some tabs still need a filename or password. '
+                    'Save them, then quit.',
+                  ),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+            return;
+          }
+        }
       }
     }
 

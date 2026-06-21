@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../constants.dart';
 import '../services/file_service.dart';
+import '../services/rtf_service.dart';
 import '../services/settings_service.dart';
 
 /// Editor mode for each tab
@@ -166,28 +167,65 @@ class EditorProvider extends ChangeNotifier {
   }
 
   Future<void> _autoSaveAll() async {
+    await _saveDirtyFileBackedTabs();
+  }
+
+  /// Save every dirty tab that can be persisted without UI: it needs a
+  /// [filePath] and, if encrypted, a password. Returns true once no dirty tabs
+  /// remain (everything was saved). Untitled tabs and password-less encrypted
+  /// tabs are intentionally left dirty so the caller (e.g. the quit flow) can
+  /// refuse to discard them and route them through save-as instead.
+  Future<bool> saveAllSaveable() async {
+    await _saveDirtyFileBackedTabs();
+    return !hasUnsavedChanges;
+  }
+
+  /// Shared write loop for auto-save and save-all. Writes each dirty,
+  /// file-backed tab through the same extension-aware routing the manual save
+  /// path uses, so a .rtf rich-text tab is converted to RTF rather than having
+  /// its scrib_rich envelope written verbatim.
+  Future<bool> _saveDirtyFileBackedTabs() async {
     bool saved = false;
     for (final tab in List.of(_tabs)) {
       if (!tab.isDirty || tab.filePath == null) continue;
       try {
-        final content = tab.getSaveContent();
-        if (tab.isEncrypted && tab.password != null) {
-          await _fileService.writeScrbFile(tab.filePath!, content, tab.password!);
-        } else {
-          await _fileService.writeTxtFile(tab.filePath!, content);
+        if (await _saveTabToDisk(tab)) {
+          tab.markSaved();
+          saved = true;
         }
-        tab.markSaved();
-        saved = true;
       } catch (e) {
-        // Auto-save should never interrupt the user, but surfacing failures
-        // in the debug console means disk-full / permission issues aren't
-        // completely invisible during development and bug triage.
+        // Background saves must never interrupt the user, but surfacing
+        // failures in the debug console keeps disk-full / permission issues
+        // from being completely invisible during development and bug triage.
         if (kDebugMode) {
-          debugPrint('Auto-save failed for ${tab.fileName}: $e');
+          debugPrint('Save failed for ${tab.fileName}: $e');
         }
       }
     }
     if (saved) notifyListeners();
+    return saved;
+  }
+
+  /// Write a single tab to its existing [filePath] using extension-aware
+  /// routing: encrypted → .scrb, rich-text .rtf → Delta-to-RTF, otherwise
+  /// plain text. Returns false (without writing) if the tab cannot be saved
+  /// safely (no path, or encrypted with no password — never write plaintext
+  /// into a .scrb). Throws on I/O failure.
+  Future<bool> _saveTabToDisk(EditorTab tab) async {
+    final path = tab.filePath;
+    if (path == null) return false;
+    final content = tab.getSaveContent();
+    if (tab.isEncrypted) {
+      if (tab.password == null) return false;
+      await _fileService.writeScrbFile(path, content, tab.password!);
+    } else if (tab.mode == EditorMode.richText &&
+        path.toLowerCase().endsWith('.rtf') &&
+        tab.deltaJson.isNotEmpty) {
+      await _fileService.writeRtfFile(path, RtfService.deltaToRtf(tab.deltaJson));
+    } else {
+      await _fileService.writeTxtFile(path, content);
+    }
+    return true;
   }
 
   // Getters
@@ -389,6 +427,10 @@ class EditorProvider extends ChangeNotifier {
       final tab = _tabs[existingIndex];
       tab.controller.text = plainContent;
       tab.savedContent = plainContent;
+      // The file on disk is encrypted — the tab MUST be flagged encrypted, or a
+      // subsequent save writes the decrypted plaintext back out unencrypted.
+      tab.isEncrypted = true;
+      tab.fileName = fileName;
       tab.password = password;
       tab.mode = mode;
       tab.deltaJson = deltaJson;
@@ -520,7 +562,7 @@ class EditorProvider extends ChangeNotifier {
   void setTabFontSize(double size) {
     final tab = activeTab;
     if (tab == null) return;
-    tab.tabFontSize = size.clamp(8.0, 48.0);
+    tab.tabFontSize = size.clamp(minFontSize, maxFontSize);
     notifyListeners();
   }
 

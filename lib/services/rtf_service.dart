@@ -15,19 +15,30 @@ import 'dart:convert';
 class RtfService {
   RtfService._();
 
-  /// Convert Quill Delta JSON string to RTF string
+  /// Convert Quill Delta JSON string to RTF string.
+  ///
+  /// Malformed/garbage Delta never throws: on a parse failure the raw string is
+  /// exported as escaped plain text inside a valid RTF wrapper.
   static String deltaToRtf(String deltaJson) {
     if (deltaJson.isEmpty) return _wrapRtf('');
 
-    final ops = jsonDecode(deltaJson) as List<dynamic>;
+    final List<dynamic> ops;
+    try {
+      final decoded = jsonDecode(deltaJson);
+      if (decoded is! List) return _wrapRtf('${_escapeRtf(deltaJson)}\\par\n');
+      ops = decoded;
+    } catch (_) {
+      return _wrapRtf('${_escapeRtf(deltaJson)}\\par\n');
+    }
     final fonts = <String>{'Times New Roman'}; // Default font at index 0
 
     // First pass: collect all fonts used
     for (final op in ops) {
       if (op is Map && op.containsKey('attributes')) {
         final attrs = op['attributes'] as Map<String, dynamic>?;
-        if (attrs != null && attrs.containsKey('font')) {
-          fonts.add(attrs['font'] as String);
+        final font = attrs?['font'];
+        if (font is String) {
+          fonts.add(font);
         }
       }
     }
@@ -257,11 +268,22 @@ class RtfService {
               break;
             case 'ul':
               flushText();
-              underline = true;
+              // `\ul` (no param) and `\ul1` turn underline on; `\ul0` turns it off.
+              underline = paramVal != 0;
               break;
             case 'ulnone':
               flushText();
               underline = false;
+              break;
+            case 'u':
+              // Unicode escape: paramVal is a signed 16-bit code unit.
+              flushText();
+              if (paramVal != null) {
+                final cu = paramVal < 0 ? paramVal + 65536 : paramVal;
+                if (cu >= 0 && cu <= 0xFFFF) {
+                  textBuffer.write(String.fromCharCode(cu));
+                }
+              }
               break;
             case 'strike':
               flushText();
@@ -301,6 +323,11 @@ class RtfService {
           }
 
           i = ctrlMatch.end;
+          // A \uN escape is followed by \ucN fallback characters (default 1)
+          // for readers that can't render Unicode. Skip one fallback unit.
+          if (word == 'u') {
+            i = _skipUnicodeFallback(content, i);
+          }
           continue;
         }
 
@@ -313,12 +340,13 @@ class RtfService {
             continue;
           }
           if (nextChar == '\'') {
-            // Hex character
-            if (i + 3 < content.length) {
+            // Hex character. The escape is exactly `\'XX` (4 chars); the bounds
+            // check must allow it to sit flush against end-of-string.
+            if (i + 4 <= content.length) {
               final hex = content.substring(i + 2, i + 4);
               final code = int.tryParse(hex, radix: 16);
               if (code != null) {
-                textBuffer.write(String.fromCharCode(code));
+                textBuffer.write(String.fromCharCode(_cp1252(code)));
               }
               i += 4;
               continue;
@@ -338,6 +366,37 @@ class RtfService {
     flushText();
   }
 
+  /// Advance past the single fallback character that follows a `\uN` escape
+  /// (the `\ucN` substitution count defaults to 1). The fallback may be a
+  /// literal char, a `\'XX` hex byte, or another control word.
+  static int _skipUnicodeFallback(String content, int i) {
+    if (i >= content.length) return i;
+    if (content[i] == '\\') {
+      final fb = RegExp(r"\\'[0-9a-fA-F]{2}|\\[a-z]+-?\d*\s?")
+          .matchAsPrefix(content, i);
+      if (fb != null) return fb.end;
+      return i + 1;
+    }
+    return i + 1;
+  }
+
+  /// Map a single RTF `\'XX` byte to a Unicode code point. Bytes 0x00-0x7F and
+  /// 0xA0-0xFF are identical to Latin-1; the 0x80-0x9F range is the Windows
+  /// cp1252 "smart punctuation" block that differs from Latin-1 (e.g. 0x95 is
+  /// the bullet U+2022, 0x92 the right single quote U+2019).
+  static int _cp1252(int b) {
+    if (b < 0x80 || b > 0x9F) return b;
+    const table = <int, int>{
+      0x80: 0x20AC, 0x82: 0x201A, 0x83: 0x0192, 0x84: 0x201E, 0x85: 0x2026,
+      0x86: 0x2020, 0x87: 0x2021, 0x88: 0x02C6, 0x89: 0x2030, 0x8A: 0x0160,
+      0x8B: 0x2039, 0x8C: 0x0152, 0x8E: 0x017D, 0x91: 0x2018, 0x92: 0x2019,
+      0x93: 0x201C, 0x94: 0x201D, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014,
+      0x98: 0x02DC, 0x99: 0x2122, 0x9A: 0x0161, 0x9B: 0x203A, 0x9C: 0x0153,
+      0x9E: 0x017E, 0x9F: 0x0178,
+    };
+    return table[b] ?? b;
+  }
+
   static String _inlineFormatting(Map<String, dynamic> attrs, List<String> fontList) {
     if (attrs.isEmpty) return '';
 
@@ -346,8 +405,9 @@ class RtfService {
     if (attrs.containsKey('italic') && attrs['italic'] == true) buf.write('\\i');
     if (attrs.containsKey('underline') && attrs['underline'] == true) buf.write('\\ul');
     if (attrs.containsKey('strike') && attrs['strike'] == true) buf.write('\\strike');
-    if (attrs.containsKey('font')) {
-      final fontIndex = fontList.indexOf(attrs['font'] as String);
+    final font = attrs['font'];
+    if (font is String) {
+      final fontIndex = fontList.indexOf(font);
       if (fontIndex >= 0) buf.write('\\f$fontIndex');
     }
     if (attrs.containsKey('size')) {
@@ -410,7 +470,12 @@ class RtfService {
       } else if (codeUnit == 0x7D) { // }
         buf.write('\\}');
       } else if (codeUnit > 127) {
-        buf.write('\\u$codeUnit?');
+        // RTF \uN takes a SIGNED 16-bit integer: code units above 32767 must be
+        // emitted as N-65536. Iterating codeUnits emits each UTF-16 unit, so
+        // astral characters (emoji etc.) come through as their two surrogate
+        // halves — exactly how RTF represents them as a pair of \uN escapes.
+        final signed = codeUnit > 32767 ? codeUnit - 65536 : codeUnit;
+        buf.write('\\u$signed?');
       } else {
         buf.writeCharCode(codeUnit);
       }

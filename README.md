@@ -120,16 +120,22 @@ Release binary: `build\windows\x64\runner\Release\scrib_desktop.exe`
 
 ```
 lib/
-  main.dart                         Entry point, window management
-  constants.dart                    Brand constants, color palettes
+  main.dart                         Entry point, window management, quit flow
+  constants.dart                    Brand constants, color palettes, crypto params
   providers/
-    editor_provider.dart            Tab state, file I/O, search logic
+    editor_provider.dart            Tab state, file I/O, search, auto-save
   screens/
-    main_screen.dart                Menu bar, shortcuts, dialogs
+    main_screen.dart                Menu bar, shortcuts, drag-and-drop
   services/
-    file_service.dart               Disk I/O, AES-256 encryption
+    file_service.dart               Disk I/O, AES-256 encryption (.scrb v2/v3)
+    file_operations.dart            Save / Save As decision tree
+    atomic_write.dart               Windows atomic rename + crash recovery
     settings_service.dart           Persistent settings (Hive)
     rtf_service.dart                Quill Delta <-> RTF conversion
+  dialogs/
+    password_dialog.dart            Password entry / set-password dialogs
+    about_dialog.dart               About Scrib
+    confirm_dialog.dart             Unsaved-changes / confirm / font-size dialogs
   widgets/
     editor_widget.dart              Plain text + rich text editor
     formatting_toolbar_widget.dart  Rich text formatting toolbar
@@ -140,9 +146,10 @@ lib/
     status_bar_widget.dart          Word / char / line count, status
   theme/
     desktop_theme.dart              Dark and light Material 3 themes
+    scrib_colors.dart               ThemeExtension color palette
 ```
 
-15 Dart files, ~5,500 lines of code.
+21 Dart files, ~6,900 lines of code, covered by 200+ tests.
 
 ---
 
@@ -152,20 +159,23 @@ Scrib uses **Encrypt-then-MAC** with AES-256-CBC and HMAC-SHA256.
 
 | Component | Detail |
 |---|---|
-| Key derivation | PBKDF2-SHA256, 100,000 iterations, 64-byte output (32 enc + 32 mac) |
+| Key derivation | PBKDF2-SHA256, 64-byte output (32 enc + 32 mac). v2: fixed 100,000 iterations. v3: iteration count stored per-file (so it can be raised later without breaking old files). |
 | IV | 16 bytes, `Random.secure()` per save |
 | Salt | 32 bytes, `Random.secure()` per save |
-| HMAC | SHA-256 over `version ‖ IV ‖ salt ‖ ciphertext` |
+| HMAC | SHA-256 over `version ‖ KDF params ‖ IV ‖ salt ‖ ciphertext` (the KDF parameters are authenticated, so a downgrade is rejected) |
 | Key hygiene | PBKDF2 runs in a background isolate. Key bytes are zeroed after use. |
 | Atomic writes | Saves use `MoveFileExW` on Windows so a crash during save never corrupts your file. |
 
-`.scrb` v2 binary layout:
+`.scrb` binary layout:
 
 ```
-[SCRB magic 4B][version 1B][IV 16B][salt 32B][HMAC 32B][ciphertext...]
+v3 (current): [SCRB 4B][version=3 1B][kdfId 1B][iterations u32-BE 4B][IV 16B][salt 32B][HMAC 32B][ciphertext...]
+v2 (legacy):  [SCRB 4B][version=2 1B][IV 16B][salt 32B][HMAC 32B][ciphertext...]
 ```
 
-The HMAC is verified before decryption. Tampered files are rejected.
+The HMAC is verified before decryption. Tampered files are rejected. New files
+are written as v3; every existing v2 file is still read by a preserved v2 code
+path, so upgrading never strands a file.
 
 ### Threat model
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../dialogs/confirm_dialog.dart';
 import '../providers/editor_provider.dart';
 import '../services/settings_service.dart';
 import '../constants.dart';
@@ -194,7 +195,12 @@ class ScribToolbar extends StatelessWidget {
               waitDuration: const Duration(milliseconds: 500),
               child: InkWell(
                 onTap: hasTab ? () async {
-                  final size = await _showFontSizeInput(context, tabFontSize, isDark);
+                  final size = await showFontSizeInput(
+                    context,
+                    current: tabFontSize,
+                    min: minFontSize,
+                    max: maxFontSize,
+                  );
                   if (size != null) editor.setTabFontSize(size);
                 } : null,
                 borderRadius: BorderRadius.circular(4),
@@ -229,20 +235,30 @@ class ScribToolbar extends StatelessWidget {
 
           ...List.generate(accentColors.length, (i) {
             final isSelected = colorIndex == i;
+            final name = i < accentColorNames.length ? accentColorNames[i] : 'Color ${i + 1}';
             return Padding(
               padding: const EdgeInsets.symmetric(horizontal: 2),
-              child: InkWell(
-                onTap: hasTab ? () => editor.setTabColor(isSelected ? null : i) : null,
-                borderRadius: BorderRadius.circular(10),
-                child: Container(
-                  width: 16,
-                  height: 16,
-                  decoration: BoxDecoration(
-                    color: accentColors[i],
-                    shape: BoxShape.circle,
-                    border: isSelected
-                        ? Border.all(color: Colors.white, width: 2)
-                        : null,
+              child: Semantics(
+                button: true,
+                selected: isSelected,
+                label: 'Note color $name',
+                child: Tooltip(
+                  message: name,
+                  waitDuration: const Duration(milliseconds: 500),
+                  child: InkWell(
+                    onTap: hasTab ? () => editor.setTabColor(isSelected ? null : i) : null,
+                    borderRadius: BorderRadius.circular(10),
+                    child: Container(
+                      width: 16,
+                      height: 16,
+                      decoration: BoxDecoration(
+                        color: accentColors[i],
+                        shape: BoxShape.circle,
+                        border: isSelected
+                            ? Border.all(color: Colors.white, width: 2)
+                            : null,
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -271,48 +287,6 @@ class ScribToolbar extends StatelessWidget {
       ),
     );
   }
-}
-
-Future<double?> _showFontSizeInput(BuildContext context, double current, bool isDark) async {
-  final controller = TextEditingController(text: '${current.round()}');
-  final result = await showDialog<double>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      title: const Text('Set Text Size'),
-      content: TextField(
-        controller: controller,
-        autofocus: true,
-        keyboardType: TextInputType.number,
-        decoration: const InputDecoration(
-          labelText: 'Font size (6–144)',
-          border: OutlineInputBorder(),
-          enabledBorder: OutlineInputBorder(),
-          focusedBorder: OutlineInputBorder(),
-        ),
-        onSubmitted: (value) {
-          final parsed = double.tryParse(value);
-          if (parsed != null) {
-            Navigator.pop(ctx, parsed.clamp(6, 144));
-          }
-        },
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-        FilledButton(
-          onPressed: () {
-            final parsed = double.tryParse(controller.text);
-            if (parsed != null) {
-              Navigator.pop(ctx, parsed.clamp(6, 144));
-            }
-          },
-          child: const Text('Apply'),
-        ),
-      ],
-    ),
-  );
-  controller.dispose();
-  return result;
 }
 
 class _ToolbarButton extends StatelessWidget {

@@ -148,17 +148,22 @@ void main() {
       expect(b1.sublist(53, 85), isNot(equals(b2.sublist(53, 85)))); // HMAC
     });
 
-    test('.scrb byte layout matches documented format', () async {
+    test('.scrb byte layout matches documented v3 format', () async {
       const content = 'format check';
       const password = 'format-check-password';
       final p = path('layout.scrb');
 
-      await fs.writeScrbFile(p, content, password);
+      // New saves are v3: [magic 4][ver 1][kdfId 1][iters 4][IV 16][salt 32][HMAC 32][ct].
+      await fs.writeScrbFile(p, content, password, iterations: 1000);
       final bytes = await File(p).readAsBytes();
 
       expect(bytes.sublist(0, 4), scrbMagic); // SCRB
-      expect(bytes[4], scrbVersionV2);
-      expect(bytes.length, greaterThanOrEqualTo(85 + 16));
+      expect(bytes[4], scrbVersionV3);
+      expect(bytes[5], scrbKdfPbkdf2Sha256);
+      // iterations stored big-endian uint32 at offset 6
+      final iters = (bytes[6] << 24) | (bytes[7] << 16) | (bytes[8] << 8) | bytes[9];
+      expect(iters, 1000);
+      expect(bytes.length, greaterThanOrEqualTo(90 + 16));
     });
 
     test('isScrbFile detects magic bytes', () async {

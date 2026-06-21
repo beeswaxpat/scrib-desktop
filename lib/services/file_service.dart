@@ -62,22 +62,40 @@ Uint8List _aesCbcDecrypt(Uint8List key, Uint8List iv, Uint8List ciphertext) {
   return cipher.process(ciphertext);
 }
 
-/// Encrypt content → .scrb v2 file bytes.  Called via compute().
-/// Byte layout is unchanged from v1.1.x — existing files remain readable.
-Uint8List _doEncrypt(Map<String, dynamic> p) {
-  final content  = p['content'] as String;
-  final password = p['password'] as String;
-  final iv       = p['iv'] as Uint8List;
-  final salt     = p['salt'] as Uint8List;
+/// Big-endian uint32 encode/decode for the v3 iteration-count header field.
+Uint8List _uint32be(int v) => Uint8List(4)
+  ..[0] = (v >> 24) & 0xFF
+  ..[1] = (v >> 16) & 0xFF
+  ..[2] = (v >> 8) & 0xFF
+  ..[3] = v & 0xFF;
 
-  final km     = _pbkdf2(password, salt, scrbPbkdf2Iterations, scrbKeyMaterialLength);
+int _readUint32be(Uint8List b, int o) =>
+    (b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3];
+
+/// Encrypt content → .scrb v3 file bytes.  Called via compute().
+///
+/// v3 stores the KDF id and iteration count in the header and authenticates
+/// them with the HMAC, so the work factor is self-describing and tamper-proof.
+/// Byte layout: [SCRB 4][ver 1][kdfId 1][iters u32be 4][IV 16][salt 32][HMAC 32][ct].
+Uint8List _doEncrypt(Map<String, dynamic> p) {
+  final content    = p['content'] as String;
+  final password   = p['password'] as String;
+  final iv         = p['iv'] as Uint8List;
+  final salt       = p['salt'] as Uint8List;
+  final iterations = p['iterations'] as int;
+
+  final km     = _pbkdf2(password, salt, iterations, scrbKeyMaterialLength);
   final encKey = Uint8List.fromList(km.sublist(0, 32));
   final macKey = Uint8List.fromList(km.sublist(32, 64));
 
   final ct = _aesCbcEncrypt(encKey, iv, Uint8List.fromList(utf8.encode(content)));
+  final iterBytes = _uint32be(iterations);
 
+  // HMAC authenticates ver ‖ kdfId ‖ iterations ‖ IV ‖ salt ‖ ciphertext.
   final auth = BytesBuilder()
-    ..addByte(scrbVersionV2)
+    ..addByte(scrbVersionV3)
+    ..addByte(scrbKdfPbkdf2Sha256)
+    ..add(iterBytes)
     ..add(iv)
     ..add(salt)
     ..add(ct);
@@ -85,7 +103,9 @@ Uint8List _doEncrypt(Map<String, dynamic> p) {
 
   final out = BytesBuilder()
     ..add(scrbMagic)
-    ..addByte(scrbVersionV2)
+    ..addByte(scrbVersionV3)
+    ..addByte(scrbKdfPbkdf2Sha256)
+    ..add(iterBytes)
     ..add(iv)
     ..add(salt)
     ..add(hmac)
@@ -98,7 +118,8 @@ Uint8List _doEncrypt(Map<String, dynamic> p) {
 }
 
 /// Decrypt .scrb file bytes → plaintext (or null on wrong password / tamper).
-/// Called via compute().
+/// Called via compute(). Branches on the version byte so v2 files written by
+/// every prior build still decrypt identically.
 String? _doDecrypt(Map<String, dynamic> p) {
   final bytes    = p['bytes'] as Uint8List;
   final password = p['password'] as String;
@@ -106,7 +127,7 @@ String? _doDecrypt(Map<String, dynamic> p) {
   final version  = bytes[4];
 
   if (version == scrbVersionV2) {
-    // Header: [magic 4][ver 1][iv 16][salt 32][hmac 32] = 85 bytes.
+    // v2 header: [magic 4][ver 1][iv 16][salt 32][hmac 32] = 85 bytes.
     // Ciphertext must be at least one AES block (16 bytes) after padding.
     if (bytes.length < 85 + 16) return null;
     final iv   = Uint8List.fromList(bytes.sublist(5, 21));
@@ -137,6 +158,50 @@ String? _doDecrypt(Map<String, dynamic> p) {
       _zero(macKey);
     }
   }
+
+  if (version == scrbVersionV3) {
+    // v3 header: [magic 4][ver 1][kdfId 1][iters 4][iv 16][salt 32][hmac 32] = 90 bytes.
+    const headerLen = 4 + 1 + 1 + 4 + scrbIvLength + scrbSaltLength + scrbHmacLength; // 90
+    if (bytes.length < headerLen + 16) return null;
+
+    final kdfId = bytes[5];
+    if (kdfId != scrbKdfPbkdf2Sha256) return null; // unknown KDF
+
+    final iterations = _readUint32be(bytes, 6);
+    if (iterations < scrbMinIterations || iterations > scrbMaxIterations) return null;
+
+    final iterBytes = Uint8List.fromList(bytes.sublist(6, 10));
+    final iv   = Uint8List.fromList(bytes.sublist(10, 26));
+    final salt = Uint8List.fromList(bytes.sublist(26, 58));
+    final mac  = Uint8List.fromList(bytes.sublist(58, 90));
+    final ct   = Uint8List.fromList(bytes.sublist(90));
+    if (ct.isEmpty) return null;
+
+    final km     = _pbkdf2(password, salt, iterations, scrbKeyMaterialLength);
+    final encKey = Uint8List.fromList(km.sublist(0, 32));
+    final macKey = Uint8List.fromList(km.sublist(32, 64));
+    try {
+      final auth = BytesBuilder()
+        ..addByte(version)
+        ..addByte(kdfId)
+        ..add(iterBytes)
+        ..add(iv)
+        ..add(salt)
+        ..add(ct);
+      if (!_constantTimeEq(mac, _hmacSha256(macKey, auth.toBytes()))) {
+        return null;
+      }
+      final plaintext = _aesCbcDecrypt(encKey, iv, ct);
+      return utf8.decode(plaintext);
+    } catch (_) {
+      return null;
+    } finally {
+      _zero(km);
+      _zero(encKey);
+      _zero(macKey);
+    }
+  }
+
   return null;
 }
 
@@ -162,8 +227,11 @@ class ScribFileWriteException implements Exception {
 
 /// Handles .txt, .rtf, and .scrb file I/O.
 ///
-/// .scrb v2 format: [SCRB 4B][ver 1B][IV 16B][salt 32B][HMAC 32B][ciphertext]
-/// Key derivation: PBKDF2-SHA256, 100k iterations, 64-byte output (32 enc + 32 mac).
+/// .scrb v3 (current): [SCRB 4B][ver 1B][kdfId 1B][iters u32be 4B][IV 16B][salt 32B][HMAC 32B][ct]
+/// .scrb v2 (legacy):  [SCRB 4B][ver 1B][IV 16B][salt 32B][HMAC 32B][ct] — still read.
+/// Key derivation: PBKDF2-SHA256 (v2: fixed 100k; v3: per-file, default 600k),
+/// 64-byte output (32 enc + 32 mac). Encrypt-then-MAC; the MAC authenticates the
+/// version, KDF parameters, IV, salt and ciphertext.
 ///
 /// All writes are atomic on Windows via MoveFileExW — see atomic_write.dart.
 class FileService {
@@ -201,8 +269,18 @@ class FileService {
     return compute(_doDecrypt, {'bytes': bytes, 'password': password});
   }
 
-  /// Encrypt and write a .scrb v2 file atomically.
-  Future<void> writeScrbFile(String path, String content, String password) async {
+  /// Encrypt and write a .scrb v3 file atomically.
+  ///
+  /// New files are written as v3 (KDF parameters stored + authenticated in the
+  /// header). The [iterations] count defaults to [scrbV3DefaultIterations] and
+  /// is only overridden by tests that need a fast derivation; production code
+  /// must not pass it.
+  Future<void> writeScrbFile(
+    String path,
+    String content,
+    String password, {
+    int iterations = scrbV3DefaultIterations,
+  }) async {
     // AES-CBC + PKCS7 can misbehave with empty strings; use a newline as minimum.
     // Backward-compatible with v1.1.x: existing empty encrypted files remain readable.
     final safe = content.isEmpty ? '\n' : content;
@@ -222,6 +300,7 @@ class FileService {
       'password': password,
       'iv': iv,
       'salt': salt,
+      'iterations': iterations,
     });
 
     try {

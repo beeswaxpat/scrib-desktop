@@ -21,6 +21,12 @@ import '../widgets/toolbar_widget.dart';
 import '../widgets/search_bar_widget.dart';
 import '../widgets/global_search_widget.dart';
 
+/// Extensions Scrib can open. Shared by the file picker and drag-and-drop so
+/// both accept exactly the same set.
+const List<String> kOpenableExtensions = [
+  'txt', 'scrb', 'rtf', 'md', 'log', 'csv', 'json', 'xml', 'yaml', 'yml', 'ini', 'cfg',
+];
+
 /// Main Scrib Desktop screen. Delegates dialogs to [dialogs/] and the
 /// save/save-as decision tree to [FileOperations].
 class MainScreen extends StatefulWidget {
@@ -45,6 +51,13 @@ class _MainScreenState extends State<MainScreen> {
     setState(() => _processingMessage = message);
   }
 
+  /// Whether [path]'s extension is one Scrib can open (used to filter drops).
+  static bool _isSupportedOpenPath(String path) {
+    final dot = path.lastIndexOf('.');
+    if (dot == -1 || dot == path.length - 1) return false;
+    return kOpenableExtensions.contains(path.substring(dot + 1).toLowerCase());
+  }
+
   @override
   Widget build(BuildContext context) {
     final showSearch = context.select<EditorProvider, bool>((e) => e.showSearch);
@@ -63,8 +76,21 @@ class _MainScreenState extends State<MainScreen> {
           onDragExited: (_) => setState(() => _isDragging = false),
           onDragDone: (details) {
             setState(() => _isDragging = false);
+            bool rejectedAny = false;
             for (final file in details.files) {
-              _openFilePath(context, file.path);
+              final path = file.path;
+              if (FileSystemEntity.isDirectorySync(path)) {
+                rejectedAny = true;
+                continue;
+              }
+              if (!_isSupportedOpenPath(path)) {
+                rejectedAny = true;
+                continue;
+              }
+              _openFilePath(context, path);
+            }
+            if (rejectedAny && context.mounted) {
+              _showSnack(context, 'Some items were skipped (only text files can be opened).');
             }
           },
           child: Scaffold(
@@ -450,7 +476,7 @@ class _MainScreenState extends State<MainScreen> {
   Future<void> _openFileDialog(BuildContext context) async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['txt', 'scrb', 'rtf', 'md', 'log', 'csv', 'json', 'xml', 'yaml', 'yml', 'ini', 'cfg'],
+      allowedExtensions: kOpenableExtensions,
       allowMultiple: true,
     );
     if (result == null || !context.mounted) return;
@@ -684,11 +710,9 @@ class _MainScreenState extends State<MainScreen> {
       return;
     }
 
-    if (tab.filePath == null) {
-      editor.closeTab(index);
-      return;
-    }
-
+    // A dirty tab — including an untitled one the user has typed into — must
+    // not be dropped silently. Offer Save / Discard / Cancel; the Save branch
+    // below routes untitled tabs through Save As.
     final choice = await showUnsavedChangesDialog(context, fileName: tab.fileName);
     if (!mounted || choice == UnsavedChangesChoice.cancel) return;
 
