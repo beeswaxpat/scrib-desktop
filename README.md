@@ -48,6 +48,7 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 - Text color palette (10 colors) and neon highlight colors (8 colors)
 - Headings (H1–H3), bullet lists, numbered lists, block quotes
 - Text alignment (left, center, right, justify) and indent/outdent
+- Insert images (Insert menu or the rich-text toolbar): PNG, JPEG, GIF, WebP, BMP, SVG, TIFF, TGA, ICO, PSD and more. Images are embedded in the note itself, so inside a `.scrb` they are encrypted along with the text. Large images are downscaled on insert.
 
 **Search**
 - Find within current tab (`Ctrl+F`)
@@ -136,6 +137,7 @@ lib/
     atomic_write.dart               Windows atomic rename + crash recovery
     settings_service.dart           Persistent settings (Hive)
     rtf_service.dart                Quill Delta <-> RTF conversion
+    image_embed_service.dart        Image pick / decode / downscale to data URI
   dialogs/
     password_dialog.dart            Password entry / set-password dialogs (strength meter)
     about_dialog.dart               About Scrib
@@ -143,6 +145,7 @@ lib/
     shortcuts_dialog.dart           Keyboard shortcuts reference (F1)
   widgets/
     editor_widget.dart              Plain text + rich text editor
+    image_embed_builder.dart        Renders image embeds (raster + SVG)
     formatting_toolbar_widget.dart  Rich text formatting toolbar
     toolbar_widget.dart             Quick-action toolbar (plain text)
     tab_bar_widget.dart             Tab bar with rename, color, close, right-click menu
@@ -154,7 +157,7 @@ lib/
     scrib_colors.dart               ThemeExtension color palette
 ```
 
-22 Dart files, ~7,000 lines of code, covered by 220+ tests.
+24 Dart files, ~7,400 lines of code, covered by 230+ tests.
 
 ---
 
@@ -217,6 +220,7 @@ Encrypted tabs display a gold lock icon.
 |---|---|
 | **File** | New, Open, Recent Files, Save, Save As, Set Save Location, Close Tab |
 | **Edit** | Undo, Redo, Cut, Copy, Paste, Select All, Find, Find & Replace, Search All Tabs |
+| **Insert** | Image (rich text mode) |
 | **View** | Increase/Decrease/Default Text Size, Line Numbers toggle, Auto-Save toggle, Theme (System/Light/Dark) |
 | **Security** | Encrypt File / Decrypt File |
 | **Help** | Keyboard Shortcuts, About Scrib |
@@ -228,6 +232,8 @@ Encrypted tabs display a gold lock icon.
 | Package | Purpose |
 |---|---|
 | `flutter_quill` | Rich text editor (Delta format) |
+| `flutter_svg` | Renders SVG image embeds |
+| `image` | Decodes and downscales image formats on insert |
 | `provider` | State management |
 | `hive` | Local settings persistence |
 | `file_picker` | Native open/save dialogs |

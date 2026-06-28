@@ -2,7 +2,7 @@ name: scrib_desktop
 description: "The encrypted Notepad. No tracking. No cloud. Just notes."
 publish_to: 'none'
 
-version: 1.4.0+5
+version: 1.5.0+6
 
 environment:
   sdk: ^3.10.7
@@ -33,6 +33,11 @@ dependencies:
   # Desktop-specific
   window_manager: ^0.4.2
   desktop_drop: ^0.4.4
+
+  # Image embeds — flutter_svg renders SVG; image decodes the long-tail raster
+  # formats (TIFF, TGA, ICO, PSD, etc.) and downscales large images on insert.
+  flutter_svg: ^2.3.0
+  image: ^4.8.0
 
 dev_dependencies:
   flutter_test:

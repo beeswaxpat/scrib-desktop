@@ -4,6 +4,37 @@ All notable changes to Scrib Desktop are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-06-27 - Image embeds
+
+Rich-text notes can now hold images. The `.scrb` format and settings schema are
+unchanged; an image is stored inside the note's own content, so a note without
+images is byte-identical to before.
+
+### Added
+- **Insert images into rich-text notes**, from the Insert menu or the rich-text
+  toolbar. A wide range of formats is accepted: PNG, JPEG, GIF (animated), WebP,
+  BMP and SVG (vector) render directly, while TIFF, TGA, ICO, PSD, PNM, EXR and
+  other formats are decoded and normalized to PNG on insert. Anything that
+  cannot be decoded is rejected with a clear message.
+- **Images stay encrypted.** An embedded image is stored as base64 inside the
+  note's Delta, so in a `.scrb` it is encrypted together with the text and
+  nothing is written unencrypted to disk.
+- **Downscale on insert.** Images larger than 2000 px on the longest side are
+  downscaled (and re-encoded) to keep notes responsive; an image that is still
+  too large after downscaling is rejected rather than embedded.
+
+### Notes
+- Image embeds exist in rich-text mode only. Saving an image note as `.rtf`
+  drops the images (RTF export here is text-only); `.scrb` is the format that
+  preserves them.
+- Typing in a note that holds very large images can lag, because the whole
+  document is re-serialized as you edit. The downscale-on-insert guard keeps
+  typical inserts small enough that this is not noticeable.
+
+### Dependencies
+- Added `flutter_svg` (renders SVG embeds) and `image` (decodes and downscales
+  images on insert).
+
 ## [1.4.0] - 2026-06-27 - Faster note closing, tab management, and a plaintext-leak fix
 
 A responsiveness and usability pass with one security fix. **The `.scrb` file

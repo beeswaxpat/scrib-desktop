@@ -16,6 +16,7 @@ import '../services/rtf_service.dart';
 import '../services/settings_service.dart';
 import '../widgets/tab_bar_widget.dart';
 import '../widgets/editor_widget.dart';
+import '../widgets/image_embed_builder.dart';
 import '../widgets/formatting_toolbar_widget.dart';
 import '../widgets/status_bar_widget.dart';
 import '../widgets/toolbar_widget.dart';
@@ -416,6 +417,15 @@ class _MainScreenState extends State<MainScreen> {
         SubmenuButton(
           menuChildren: [
             MenuItemButton(
+              onPressed: () => _insertImage(context),
+              child: const Text('Image...'),
+            ),
+          ],
+          child: const Text('Insert'),
+        ),
+        SubmenuButton(
+          menuChildren: [
+            MenuItemButton(
               shortcut: const SingleActivator(LogicalKeyboardKey.equal, control: true),
               onPressed: activeMode != EditorMode.richText ? () => _zoomIn(context) : null,
               child: const Text('Increase Text Size'),
@@ -785,6 +795,16 @@ class _MainScreenState extends State<MainScreen> {
       if (idx == -1) continue;
       await _closeTabByIndex(context, idx);
     }
+  }
+
+  Future<void> _insertImage(BuildContext context) async {
+    final controller = _activeQuill.value;
+    if (controller == null) {
+      _showSnack(context, 'Switch to Rich Text (Ctrl+M) to insert images.');
+      return;
+    }
+    final error = await pickAndInsertImage(controller);
+    if (error != null && context.mounted) _showSnack(context, error);
   }
 
   Future<void> _closeOtherTabs(BuildContext context, int index) async {

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 import '../constants.dart';
+import 'image_embed_builder.dart';
 
 /// Full-featured formatting toolbar for rich text mode.
 /// Provides WordPad-style formatting options: headings, text styling,
@@ -273,6 +274,17 @@ class ScribFormattingToolbar extends StatelessWidget {
                 isDark: isDark,
               ),
 
+              _divider(isDark),
+
+              // --- Insert image ---
+              _FormatButton(
+                icon: Icons.add_photo_alternate_outlined,
+                tooltip: 'Insert Image',
+                isActive: false,
+                onPressed: () => _onInsertImage(context),
+                isDark: isDark,
+              ),
+
               const Spacer(),
 
               Text(
@@ -289,6 +301,17 @@ class ScribFormattingToolbar extends StatelessWidget {
         },
       ),
     );
+  }
+
+  Future<void> _onInsertImage(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final error = await pickAndInsertImage(controller);
+    if (error != null) {
+      messenger.showSnackBar(SnackBar(
+        content: Text(error),
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
   }
 
   void _toggleInline(Attribute attr) {

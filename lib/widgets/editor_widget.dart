@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../providers/editor_provider.dart';
 import '../services/settings_service.dart';
 import '../constants.dart';
+import 'image_embed_builder.dart';
 
 /// The main editing area - supports both plain text and rich text modes
 class ScribEditor extends StatefulWidget {
@@ -259,6 +260,7 @@ class ScribEditorState extends State<ScribEditor> {
       config: QuillEditorConfig(
         placeholder: 'Start typing...',
         padding: const EdgeInsets.all(16),
+        embedBuilders: const [ScribImageEmbedBuilder()],
         customStyles: DefaultStyles(
           paragraph: DefaultTextBlockStyle(
             TextStyle(
