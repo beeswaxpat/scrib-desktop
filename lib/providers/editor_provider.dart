@@ -313,6 +313,70 @@ class EditorProvider extends ChangeNotifier {
     return true;
   }
 
+  /// Batch-close the given tabs in a single notification. Clean tabs are removed
+  /// and disposed; dirty tabs are left open and returned so the caller can route
+  /// them through the unsaved-changes prompt individually. The previously-active
+  /// tab stays active if it survives; otherwise the active index is clamped.
+  /// At least one tab always remains (a fresh one is created if all were closed).
+  List<EditorTab> closeTabs(Iterable<EditorTab> toClose) {
+    final closeSet = toClose.toSet();
+    if (closeSet.isEmpty) return const [];
+
+    final activeTab = (_activeTabIndex >= 0 && _activeTabIndex < _tabs.length)
+        ? _tabs[_activeTabIndex]
+        : null;
+
+    final survivors = <EditorTab>[];
+    final removed = <EditorTab>[];
+    final dirtyKept = <EditorTab>[];
+    for (final tab in _tabs) {
+      if (closeSet.contains(tab)) {
+        if (tab.isDirty) {
+          dirtyKept.add(tab);
+          survivors.add(tab);
+        } else {
+          // Clear sensitive data immediately — never defer this.
+          tab.password = null;
+          tab.savedContent = '';
+          tab.deltaJson = '';
+          tab.savedDeltaJson = '';
+          removed.add(tab);
+        }
+      } else {
+        survivors.add(tab);
+      }
+    }
+
+    if (removed.isEmpty) return dirtyKept;
+
+    _tabs
+      ..clear()
+      ..addAll(survivors);
+
+    if (_tabs.isEmpty) {
+      _tabs.add(EditorTab(fileName: _newTabName()));
+      _activeTabIndex = 0;
+    } else {
+      final keptActive = activeTab != null ? _tabs.indexOf(activeTab) : -1;
+      _activeTabIndex = keptActive != -1 ? keptActive : _tabs.length - 1;
+    }
+
+    _cachedActiveText = null;
+    notifyListeners();
+
+    // Defer disposal — synchronous dispose stutters the close frame.
+    for (final tab in removed) {
+      final controller = tab.controller;
+      final undo = tab.undoController;
+      Future.microtask(() {
+        controller.dispose();
+        undo.dispose();
+      });
+    }
+
+    return dirtyKept;
+  }
+
   // File operations
   Future<void> openFile(String path) async {
     // Check if already open

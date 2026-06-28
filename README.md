@@ -15,7 +15,7 @@
 
 The encrypted desktop editor. Plain text, rich text, and `.scrb` — fully offline, zero tracking.
 
-Built by [Beeswax Pat](https://scrib.cfd/) with [Claude Code](https://claude.ai/claude-code) · Licensed under the [GNU GPL v3](LICENSE)
+Built by [Beeswax Pat](https://scrib.cfd/), with [Claude](https://claude.ai) · Licensed under the [GNU GPL v3](LICENSE)
 
 **[Download Latest Release](https://github.com/beeswaxpat/scrib-desktop/releases)** · **[Changelog](CHANGELOG.md)** · **[Blog Post](https://scrib.cfd/blog/scrib-desktop-open-source)** · **[Website](https://scrib.cfd/)**
 
@@ -36,7 +36,9 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 **Editor**
 - Plain text and rich text editing with per-tab mode switching (`Ctrl+M`)
 - Multi-tab interface with inline rename (double-click tab), per-tab accent colors, middle-click close
-- Line numbers, word wrap, persistent window position and size
+- Right-click a tab for Close, Close Others, Close to the Right, Close All, and Rename
+- Hover a tab to see its full file path
+- Line numbers toggle (View menu), persistent window position and size
 - Drag and drop files onto the window to open them
 - Auto-save on a configurable timer
 
@@ -56,8 +58,9 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 - Toggle encryption on any tab with `Ctrl+E`
 - AES-256-CBC + HMAC-SHA256 (Encrypt-then-MAC)
 - PBKDF2-SHA256 key derivation, 100,000 iterations
-- Caps Lock warning in password dialogs
-- Encryption runs in a background isolate — UI stays responsive
+- Encrypting a file removes the plaintext original from disk (no stray copy left behind)
+- Password strength meter, no-recovery reminder, and Caps Lock warning in the set-password dialog
+- Encryption runs in a background isolate, so the UI stays responsive
 
 **File Format Support**
 - **Open:** `.txt`, `.scrb`, `.rtf`, `.md`, `.log`, `.csv`, `.json`, `.xml`, `.yaml`, `.yml`, `.ini`, `.cfg`
@@ -94,6 +97,7 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 | `Ctrl+-` | Decrease text size (plain text) |
 | `Ctrl+0` | Reset text size (plain text) |
 | `Escape` | Close search bar |
+| `F1` | Keyboard shortcuts reference |
 
 ---
 
@@ -133,14 +137,15 @@ lib/
     settings_service.dart           Persistent settings (Hive)
     rtf_service.dart                Quill Delta <-> RTF conversion
   dialogs/
-    password_dialog.dart            Password entry / set-password dialogs
+    password_dialog.dart            Password entry / set-password dialogs (strength meter)
     about_dialog.dart               About Scrib
     confirm_dialog.dart             Unsaved-changes / confirm / font-size dialogs
+    shortcuts_dialog.dart           Keyboard shortcuts reference (F1)
   widgets/
     editor_widget.dart              Plain text + rich text editor
     formatting_toolbar_widget.dart  Rich text formatting toolbar
     toolbar_widget.dart             Quick-action toolbar (plain text)
-    tab_bar_widget.dart             Tab bar with rename, color, close
+    tab_bar_widget.dart             Tab bar with rename, color, close, right-click menu
     search_bar_widget.dart          Per-tab Find & Replace
     global_search_widget.dart       Cross-tab search panel
     status_bar_widget.dart          Word / char / line count, status
@@ -149,7 +154,7 @@ lib/
     scrib_colors.dart               ThemeExtension color palette
 ```
 
-21 Dart files, ~6,900 lines of code, covered by 200+ tests.
+22 Dart files, ~7,000 lines of code, covered by 220+ tests.
 
 ---
 
@@ -212,9 +217,9 @@ Encrypted tabs display a gold lock icon.
 |---|---|
 | **File** | New, Open, Recent Files, Save, Save As, Set Save Location, Close Tab |
 | **Edit** | Undo, Redo, Cut, Copy, Paste, Select All, Find, Find & Replace, Search All Tabs |
-| **View** | Increase/Decrease/Default Text Size, Auto-Save toggle, Theme (System/Light/Dark) |
+| **View** | Increase/Decrease/Default Text Size, Line Numbers toggle, Auto-Save toggle, Theme (System/Light/Dark) |
 | **Security** | Encrypt File / Decrypt File |
-| **Help** | About Scrib |
+| **Help** | Keyboard Shortcuts, About Scrib |
 
 ---
 

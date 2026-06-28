@@ -8,11 +8,17 @@ import '../constants.dart';
 class ScribTabBar extends StatefulWidget {
   final void Function(int index) onCloseTab;
   final void Function(int index, String newName) onRenameTab;
+  final void Function(int index) onCloseOthers;
+  final void Function(int index) onCloseToRight;
+  final VoidCallback onCloseAll;
 
   const ScribTabBar({
     super.key,
     required this.onCloseTab,
     required this.onRenameTab,
+    required this.onCloseOthers,
+    required this.onCloseToRight,
+    required this.onCloseAll,
   });
 
   @override
@@ -21,6 +27,7 @@ class ScribTabBar extends StatefulWidget {
 
 class _ScribTabBarState extends State<ScribTabBar> {
   int? _editingIndex;
+  int? _hoveredIndex;
   late TextEditingController _renameController;
   late FocusNode _renameFocus;
 
@@ -89,6 +96,61 @@ class _ScribTabBarState extends State<ScribTabBar> {
     widget.onRenameTab(index, newName);
   }
 
+  Future<void> _showTabContextMenu(
+    BuildContext context,
+    Offset position,
+    int index,
+    int tabCount,
+    String fileName,
+  ) async {
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final hasOthers = tabCount > 1;
+    final hasRight = index < tabCount - 1;
+
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        position & const Size(40, 40),
+        Offset.zero & overlay.size,
+      ),
+      items: [
+        const PopupMenuItem(value: 'close', child: Text('Close')),
+        PopupMenuItem(
+          value: 'others',
+          enabled: hasOthers,
+          child: const Text('Close Others'),
+        ),
+        PopupMenuItem(
+          value: 'right',
+          enabled: hasRight,
+          child: const Text('Close to the Right'),
+        ),
+        const PopupMenuItem(value: 'all', child: Text('Close All')),
+        const PopupMenuDivider(),
+        const PopupMenuItem(value: 'rename', child: Text('Rename')),
+      ],
+    );
+    if (!context.mounted || action == null) return;
+
+    switch (action) {
+      case 'close':
+        widget.onCloseTab(index);
+        break;
+      case 'others':
+        widget.onCloseOthers(index);
+        break;
+      case 'right':
+        widget.onCloseToRight(index);
+        break;
+      case 'all':
+        widget.onCloseAll();
+        break;
+      case 'rename':
+        _startRename(index, fileName);
+        break;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final editor = context.watch<EditorProvider>();
@@ -107,21 +169,31 @@ class _ScribTabBarState extends State<ScribTabBar> {
               itemBuilder: (context, index) {
                 final tab = editor.tabs[index];
                 final isActive = index == editor.activeTabIndex;
+                final isHovered = _hoveredIndex == index;
                 final tabColor = tab.colorIndex != null
                     ? accentColors[tab.colorIndex!.clamp(0, accentColors.length - 1)]
                     : null;
 
-                return GestureDetector(
+                return MouseRegion(
+                  onEnter: (_) => setState(() => _hoveredIndex = index),
+                  onExit: (_) {
+                    if (_hoveredIndex == index) setState(() => _hoveredIndex = null);
+                  },
+                  child: GestureDetector(
                   onTap: () => editor.setActiveTab(index),
                   onDoubleTap: () => _startRename(index, tab.fileName),
                   onTertiaryTapUp: (_) => widget.onCloseTab(index),
+                  onSecondaryTapUp: (d) => _showTabContextMenu(
+                      context, d.globalPosition, index, editor.tabs.length, tab.fileName),
                   child: Container(
                     constraints: const BoxConstraints(maxWidth: 200, minWidth: 100),
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     decoration: BoxDecoration(
                       color: isActive
                           ? (isDark ? const Color(0xFF0D0D0D) : Colors.white)
-                          : Colors.transparent,
+                          : (isHovered
+                              ? (isDark ? const Color(0xFF1E1E1E) : const Color(0xFFE6E6E6))
+                              : Colors.transparent),
                       border: Border(
                         bottom: BorderSide(
                           color: isActive
@@ -189,15 +261,19 @@ class _ScribTabBarState extends State<ScribTabBar> {
                                     onSubmitted: (_) => _commitRename(),
                                   ),
                                 )
-                              : Text(
-                                  tab.displayName,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: isActive
-                                        ? (isDark ? const Color(0xFFE0E0E0) : const Color(0xFF1A1A1A))
-                                        : (isDark ? const Color(0xFF808080) : const Color(0xFF666666)),
-                                    fontWeight: isActive ? FontWeight.w500 : FontWeight.normal,
+              : Tooltip(
+                                  message: tab.filePath ?? tab.fileName,
+                                  waitDuration: const Duration(milliseconds: 600),
+                                  child: Text(
+                                    tab.displayName,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: isActive
+                                          ? (isDark ? const Color(0xFFE0E0E0) : const Color(0xFF1A1A1A))
+                                          : (isDark ? const Color(0xFF808080) : const Color(0xFF666666)),
+                                      fontWeight: isActive ? FontWeight.w500 : FontWeight.normal,
+                                    ),
                                   ),
                                 ),
                         ),
@@ -209,12 +285,17 @@ class _ScribTabBarState extends State<ScribTabBar> {
                             child: InkWell(
                               onTap: () => widget.onCloseTab(index),
                               borderRadius: BorderRadius.circular(4),
+                              hoverColor: isDark
+                                  ? const Color(0xFF3A3A3A)
+                                  : const Color(0xFFD0D0D0),
                               child: Padding(
                                 padding: const EdgeInsets.all(2),
                                 child: Icon(
                                   Icons.close,
                                   size: 14,
-                                  color: isDark ? const Color(0xFF606060) : const Color(0xFF999999),
+                                  color: (isActive || isHovered)
+                                      ? (isDark ? const Color(0xFFB0B0B0) : const Color(0xFF555555))
+                                      : (isDark ? const Color(0xFF606060) : const Color(0xFF999999)),
                                 ),
                               ),
                             ),
@@ -222,6 +303,7 @@ class _ScribTabBarState extends State<ScribTabBar> {
                       ],
                     ),
                   ),
+                ),
                 );
               },
             ),

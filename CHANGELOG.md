@@ -4,6 +4,60 @@ All notable changes to Scrib Desktop are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-06-27 - Faster note closing, tab management, and a plaintext-leak fix
+
+A responsiveness and usability pass with one security fix. **The `.scrb` file
+format and settings schema are unchanged**, so existing encrypted files and
+settings carry over untouched.
+
+### Performance
+- **Closing a note is now instant.** Pressing a tab's X (or switching tabs) no
+  longer freezes the window while the newly active note lays out. The tab now
+  closes and repaints right away, and a large note's content fills in on the
+  next frame instead of blocking the close. Measured on a 258 KB rich-text note,
+  the close dropped from roughly 590 ms of frozen UI to about 38 ms.
+- The formatting toolbar reads the active editor through a listenable instead of
+  a post-frame rebuild, removing a duplicate layout frame on every rich-text
+  activation.
+- Note: very large rich-text notes still take time to lay out (flutter_quill
+  renders the whole document), but that now happens after the tab has visibly
+  closed rather than before it.
+
+### Added
+- **Right-click tab menu**: Close, Close Others, Close to the Right, Close All,
+  and Rename. Bulk closes are applied in a single update; any tab with unsaved
+  changes still prompts before it is closed.
+- **Tab hover feedback and full-path tooltips.** Tabs highlight on hover, the
+  close button brightens, and hovering a tab shows its full file path.
+- **Line Numbers toggle** in the View menu (the gutter existed but had no way to
+  turn it on).
+- **Keyboard Shortcuts reference** dialog, opened from Help or `F1`.
+- **Password strength meter** and a no-recovery reminder in the set-password
+  dialog, alongside the existing Caps Lock warning.
+
+### Security
+- **Encrypting a file now removes the plaintext original.** Toggling encryption
+  on a `.txt` / `.rtf` previously wrote the new `.scrb` but left the original
+  unencrypted file on disk. The original is now deleted once the encrypted copy
+  is confirmed written (with a warning if it cannot be removed). Decrypting
+  likewise removes the now-stale `.scrb`. Covered by regression tests.
+
+### Fixed
+- Edit-menu Undo / Redo / Select All and `Ctrl+Y` now always target the live
+  editor after a tab switch.
+- Corrected a `file_service.dart` doc comment that claimed the v3 default was
+  600,000 PBKDF2 iterations; the actual default is 100,000 (rationale lives in
+  `constants.dart`).
+
+### Internal / quality
+- New `EditorProvider.closeTabs` batch-close method backs the tab context menu.
+- Test suite grown to 220+ with coverage for batch tab close and the
+  encrypt / decrypt plaintext-removal behavior.
+
+### Known limitations
+- The `wordWrap` setting is not yet wired into the editor; turning wrap off needs
+  a non-wrapping editor view and is tracked for a follow-up.
+
 ## [1.3.0] — 2026-06-20 — Data-integrity & format hardening
 
 A correctness / safety pass focused on data loss, an encryption-downgrade bug,

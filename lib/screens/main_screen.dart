@@ -1,13 +1,14 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_quill/flutter_quill.dart' show ChangeSource;
+import 'package:flutter_quill/flutter_quill.dart' show ChangeSource, QuillController;
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import '../dialogs/about_dialog.dart';
 import '../dialogs/confirm_dialog.dart';
 import '../dialogs/password_dialog.dart';
+import '../dialogs/shortcuts_dialog.dart';
 import '../providers/editor_provider.dart';
 import '../services/file_operations.dart';
 import '../services/file_service.dart';
@@ -40,6 +41,17 @@ class _MainScreenState extends State<MainScreen> {
   bool _isDragging = false;
   String? _processingMessage; // non-null → show loading overlay
   final _editorKey = GlobalKey<ScribEditorState>();
+
+  /// The active tab's QuillController (null in plain-text mode). Published by
+  /// ScribEditor so the formatting toolbar and find bar can react without a
+  /// post-frame setState round-trip on the whole screen.
+  final ValueNotifier<QuillController?> _activeQuill = ValueNotifier(null);
+
+  @override
+  void dispose() {
+    _activeQuill.dispose();
+    super.dispose();
+  }
 
   FileOperations get _fileOps => FileOperations(
         context.read<FileService>(),
@@ -110,26 +122,30 @@ class _MainScreenState extends State<MainScreen> {
                     ScribTabBar(
                       onCloseTab: (index) => _closeTabByIndex(context, index),
                       onRenameTab: (index, newName) => _renameTab(context, index, newName),
+                      onCloseOthers: (index) => _closeOtherTabs(context, index),
+                      onCloseToRight: (index) => _closeTabsToRight(context, index),
+                      onCloseAll: () => _closeAllTabs(context),
                     ),
                     const Divider(height: 1),
                     if (showGlobalSearch) const GlobalSearchPanel(),
                     if (showSearch)
-                      ScribSearchBar(
-                        quillController: _editorKey.currentState?.quillController,
+                      ValueListenableBuilder<QuillController?>(
+                        valueListenable: _activeQuill,
+                        builder: (context, quillCtrl, _) =>
+                            ScribSearchBar(quillController: quillCtrl),
                       ),
                     if (activeMode == EditorMode.richText)
-                      Builder(builder: (context) {
-                        final quillCtrl = _editorKey.currentState?.quillController;
-                        if (quillCtrl == null) {
-                          WidgetsBinding.instance.addPostFrameCallback((_) {
-                            if (mounted) setState(() {});
-                          });
-                          return const SizedBox.shrink();
-                        }
-                        return ScribFormattingToolbar(controller: quillCtrl);
-                      }),
+                      ValueListenableBuilder<QuillController?>(
+                        valueListenable: _activeQuill,
+                        builder: (context, quillCtrl, _) => quillCtrl == null
+                            ? const SizedBox.shrink()
+                            : ScribFormattingToolbar(controller: quillCtrl),
+                      ),
                     Expanded(
-                      child: ScribEditor(key: _editorKey),
+                      child: ScribEditor(
+                        key: _editorKey,
+                        activeQuillNotifier: _activeQuill,
+                      ),
                     ),
                     const ScribStatusBar(),
                   ],
@@ -192,7 +208,7 @@ class _MainScreenState extends State<MainScreen> {
       const SingleActivator(LogicalKeyboardKey.keyY, control: true): () {
         final tab = editor.activeTab;
         if (tab == null) return;
-        final quillCtrl = _editorKey.currentState?.quillController;
+        final quillCtrl = _activeQuill.value;
         if (tab.mode == EditorMode.richText && quillCtrl != null) {
           quillCtrl.redo();
         } else {
@@ -213,6 +229,7 @@ class _MainScreenState extends State<MainScreen> {
           editor.closeSearch();
         }
       },
+      const SingleActivator(LogicalKeyboardKey.f1): () => showShortcutsDialog(context),
     };
   }
 
@@ -220,10 +237,10 @@ class _MainScreenState extends State<MainScreen> {
     final editor = context.read<EditorProvider>();
     final themeMode = context.select<SettingsService, int>((s) => s.themeMode);
     final autoSaveOn = context.select<SettingsService, bool>((s) => s.autoSaveInterval > 0);
+    final lineNumbersOn = context.select<SettingsService, bool>((s) => s.showLineNumbers);
     final isEncryptedForMenu = context.select<EditorProvider, bool>((e) => e.activeTab?.isEncrypted ?? false);
     final activeMode = context.select<EditorProvider, EditorMode?>((e) => e.activeTab?.mode);
     final settings = context.read<SettingsService>();
-    final quillCtrl = _editorKey.currentState?.quillController;
 
     return MenuBar(
       children: [
@@ -292,6 +309,7 @@ class _MainScreenState extends State<MainScreen> {
               onPressed: () {
                 final tab = editor.activeTab;
                 if (tab == null) return;
+                final quillCtrl = _activeQuill.value;
                 if (activeMode == EditorMode.richText && quillCtrl != null) {
                   quillCtrl.undo();
                 } else {
@@ -305,6 +323,7 @@ class _MainScreenState extends State<MainScreen> {
               onPressed: () {
                 final tab = editor.activeTab;
                 if (tab == null) return;
+                final quillCtrl = _activeQuill.value;
                 if (activeMode == EditorMode.richText && quillCtrl != null) {
                   quillCtrl.redo();
                 } else {
@@ -354,6 +373,7 @@ class _MainScreenState extends State<MainScreen> {
             MenuItemButton(
               shortcut: const SingleActivator(LogicalKeyboardKey.keyA, control: true),
               onPressed: () {
+                final quillCtrl = _activeQuill.value;
                 if (activeMode == EditorMode.richText && quillCtrl != null) {
                   quillCtrl.updateSelection(
                     TextSelection(
@@ -412,6 +432,13 @@ class _MainScreenState extends State<MainScreen> {
             ),
             const Divider(),
             MenuItemButton(
+              onPressed: () => settings.setShowLineNumbers(!lineNumbersOn),
+              leadingIcon: lineNumbersOn
+                  ? const Icon(Icons.check, size: 16)
+                  : const SizedBox(width: 16),
+              child: const Text('Line Numbers'),
+            ),
+            MenuItemButton(
               onPressed: () => settings.setAutoSaveInterval(autoSaveOn ? 0 : 30),
               leadingIcon: autoSaveOn
                   ? const Icon(Icons.check, size: 16)
@@ -460,6 +487,11 @@ class _MainScreenState extends State<MainScreen> {
         ),
         SubmenuButton(
           menuChildren: [
+            MenuItemButton(
+              shortcut: const SingleActivator(LogicalKeyboardKey.f1),
+              onPressed: () => showShortcutsDialog(context),
+              child: const Text('Keyboard Shortcuts'),
+            ),
             MenuItemButton(
               onPressed: () => showScribAbout(context),
               child: const Text('About Scrib'),
@@ -581,6 +613,9 @@ class _MainScreenState extends State<MainScreen> {
       if (result.extensionChanged && context.mounted && result.newPath != null) {
         final newName = result.newPath!.split(Platform.pathSeparator).last;
         _showSnack(context, 'Saved as $newName');
+      }
+      if (result.warning != null && context.mounted) {
+        _showSnack(context, result.warning!);
       }
     } finally {
       _setProcessing(null);
@@ -737,6 +772,37 @@ class _MainScreenState extends State<MainScreen> {
     // Re-lookup — save/dialog may have shifted tab indices.
     final currentIndex = editor.tabs.indexOf(tab);
     if (currentIndex != -1) editor.closeTab(currentIndex);
+  }
+
+  /// Close a set of tabs: clean ones are removed in one pass, dirty ones are
+  /// routed through the unsaved-changes prompt one at a time.
+  Future<void> _closeTabSet(BuildContext context, List<EditorTab> targets) async {
+    final editor = context.read<EditorProvider>();
+    final dirty = editor.closeTabs(targets);
+    for (final tab in dirty) {
+      if (!mounted) return;
+      final idx = editor.tabs.indexOf(tab);
+      if (idx == -1) continue;
+      await _closeTabByIndex(context, idx);
+    }
+  }
+
+  Future<void> _closeOtherTabs(BuildContext context, int index) async {
+    final editor = context.read<EditorProvider>();
+    if (index < 0 || index >= editor.tabs.length) return;
+    final keep = editor.tabs[index];
+    await _closeTabSet(context, editor.tabs.where((t) => t != keep).toList());
+  }
+
+  Future<void> _closeTabsToRight(BuildContext context, int index) async {
+    final editor = context.read<EditorProvider>();
+    if (index < 0 || index >= editor.tabs.length) return;
+    await _closeTabSet(context, editor.tabs.sublist(index + 1).toList());
+  }
+
+  Future<void> _closeAllTabs(BuildContext context) async {
+    final editor = context.read<EditorProvider>();
+    await _closeTabSet(context, editor.tabs.toList());
   }
 
   Future<void> _toggleEncryption(BuildContext context) async {

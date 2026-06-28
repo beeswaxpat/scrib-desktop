@@ -157,6 +157,36 @@ void main() {
     expect(r.error, isNotNull);
   });
 
+  test('Case A: encrypting removes the original plaintext file from disk', () async {
+    final txtPath = path('confidential.txt');
+    await fs.writeTxtFile(txtPath, 'top secret');
+    tab().filePath = txtPath;
+    tab().controller.text = 'top secret';
+    tab().isEncrypted = true;
+    final r = await ops.saveActive(editor, passwordForNewEncryption: 'pw-abc-123');
+    expect(r.ok, isTrue);
+    expect(r.warning, isNull);
+    expect(r.newPath, endsWith('.scrb'));
+    expect(await File(r.newPath!).exists(), isTrue);
+    // The plaintext original must not linger on disk.
+    expect(await File(txtPath).exists(), isFalse);
+  });
+
+  test('Case B: decrypting removes the original .scrb file from disk', () async {
+    final scrbPath = path('locked.scrb');
+    await fs.writeScrbFile(scrbPath, 'was encrypted', 'pw', iterations: 1000);
+    tab().filePath = scrbPath;
+    tab().controller.text = 'was encrypted';
+    tab().isEncrypted = false;
+    tab().password = null;
+    final r = await ops.saveActive(editor, passwordForNewEncryption: null);
+    expect(r.ok, isTrue);
+    expect(r.newPath, endsWith('.txt'));
+    expect(await File(r.newPath!).exists(), isTrue);
+    // The stale ciphertext must not linger on disk.
+    expect(await File(scrbPath).exists(), isFalse);
+  });
+
   test('encryption-toggle rename preserves the directory and base name', () async {
     tab().filePath = path('my.note.txt'); // multi-dot name
     tab().controller.text = 'multi dot';

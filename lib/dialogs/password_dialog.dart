@@ -165,8 +165,11 @@ class _SetPasswordDialogState extends State<_SetPasswordDialog> {
           width: 360,
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Text('This password will be required to open the file.'),
+              const SizedBox(height: 8),
+              const _NoRecoveryWarning(),
               const SizedBox(height: 16),
               Semantics(
                 label: 'Password',
@@ -175,6 +178,7 @@ class _SetPasswordDialogState extends State<_SetPasswordDialog> {
                   controller: _controller1,
                   obscureText: _obscure1,
                   autofocus: true,
+                  onChanged: (_) => setState(() {}),
                   decoration: InputDecoration(
                     labelText: 'Password',
                     border: const OutlineInputBorder(),
@@ -191,6 +195,7 @@ class _SetPasswordDialogState extends State<_SetPasswordDialog> {
                   ),
                 ),
               ),
+              _PasswordStrengthBar(password: _controller1.text),
               const SizedBox(height: 8),
               Semantics(
                 label: 'Confirm password',
@@ -215,6 +220,15 @@ class _SetPasswordDialogState extends State<_SetPasswordDialog> {
                   onSubmitted: (_) => _submit(),
                 ),
               ),
+              const SizedBox(height: 8),
+              Text(
+                'A long passphrase of several words is stronger than a short '
+                'complex one.',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
               if (capsLock) const _CapsLockWarning(),
               if (_error != null) ...[
                 const SizedBox(height: 8),
@@ -237,6 +251,101 @@ class _SetPasswordDialogState extends State<_SetPasswordDialog> {
           FilledButton(
             onPressed: _submit,
             child: const Text('Encrypt'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Prominent reminder that encryption is offline and there is no recovery.
+class _NoRecoveryWarning extends StatelessWidget {
+  const _NoRecoveryWarning();
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.error;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(Icons.gpp_maybe_outlined, size: 16, color: color),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            'There is no password recovery. If you forget this password, the '
+            'file cannot be opened.',
+            style: TextStyle(fontSize: 12, color: color),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Classifies password strength purely client-side (length-weighted, with a
+/// character-class bonus). No content is sent anywhere.
+({double fraction, String label, Color color}) _passwordStrength(
+    String pw, ColorScheme scheme) {
+  if (pw.isEmpty) return (fraction: 0, label: '', color: scheme.outline);
+
+  final classes = [
+    RegExp(r'[a-z]'),
+    RegExp(r'[A-Z]'),
+    RegExp(r'[0-9]'),
+    RegExp(r'[^a-zA-Z0-9]'),
+  ].where((re) => re.hasMatch(pw)).length;
+
+  int score; // 0..3
+  if (pw.length < 8) {
+    score = 0;
+  } else if (pw.length >= 16 || (pw.length >= 12 && classes >= 3)) {
+    score = 3;
+  } else if (pw.length >= 12 || classes >= 3) {
+    score = 2;
+  } else {
+    score = 1;
+  }
+
+  switch (score) {
+    case 0:
+      return (fraction: 0.25, label: 'Weak', color: scheme.error);
+    case 1:
+      return (fraction: 0.5, label: 'Fair', color: const Color(0xFFF59E0B));
+    case 2:
+      return (fraction: 0.75, label: 'Good', color: const Color(0xFF10B981));
+    default:
+      return (fraction: 1.0, label: 'Strong', color: const Color(0xFF22C55E));
+  }
+}
+
+class _PasswordStrengthBar extends StatelessWidget {
+  final String password;
+  const _PasswordStrengthBar({required this.password});
+
+  @override
+  Widget build(BuildContext context) {
+    if (password.isEmpty) return const SizedBox(height: 12);
+    final scheme = Theme.of(context).colorScheme;
+    final s = _passwordStrength(password, scheme);
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(2),
+              child: LinearProgressIndicator(
+                value: s.fraction,
+                minHeight: 4,
+                backgroundColor: scheme.surfaceContainerHighest,
+                valueColor: AlwaysStoppedAnimation<Color>(s.color),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            s.label,
+            style: TextStyle(fontSize: 11, color: s.color),
           ),
         ],
       ),

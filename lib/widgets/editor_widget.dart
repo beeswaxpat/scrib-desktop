@@ -8,7 +8,12 @@ import '../constants.dart';
 
 /// The main editing area - supports both plain text and rich text modes
 class ScribEditor extends StatefulWidget {
-  const ScribEditor({super.key});
+  /// Receives the active tab's QuillController whenever it changes (null in
+  /// plain-text mode). Lets the formatting toolbar / find bar react without the
+  /// old post-frame setState round-trip on MainScreen.
+  final ValueNotifier<QuillController?>? activeQuillNotifier;
+
+  const ScribEditor({super.key, this.activeQuillNotifier});
 
   @override
   State<ScribEditor> createState() => ScribEditorState();
@@ -23,6 +28,13 @@ class ScribEditorState extends State<ScribEditor> {
   final _quillScrollController = ScrollController();
   int? _lastTabIndex;
   EditorMode? _lastMode;
+
+  // Deferred build: the (tabIndex, mode) we have actually committed to building.
+  // Rich-text editors are heavy to lay out, so we paint a one-frame placeholder
+  // first (letting a tab close / switch show immediately) then build the real
+  // editor on the next frame.
+  int? _builtIndex;
+  EditorMode? _builtMode;
 
   @override
   void initState() {
@@ -49,6 +61,18 @@ class ScribEditorState extends State<ScribEditor> {
 
   /// Get the current QuillController (for formatting toolbar)
   QuillController? get quillController => _quillController;
+
+  /// Publish the active controller to the listenable after the current frame
+  /// (setting it mid-build would mark already-built toolbar widgets dirty).
+  void _publishQuillController() {
+    final notifier = widget.activeQuillNotifier;
+    if (notifier == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && notifier.value != _quillController) {
+        notifier.value = _quillController;
+      }
+    });
+  }
 
   /// Rebuild the QuillController when tab or mode changes
   void _ensureQuillController(EditorTab tab, int tabIndex) {
@@ -88,6 +112,8 @@ class ScribEditorState extends State<ScribEditor> {
         _quillController!.addListener(_onQuillChanged);
       }
     }
+
+    _publishQuillController();
   }
 
   void _onQuillChanged() {
@@ -111,11 +137,43 @@ class ScribEditorState extends State<ScribEditor> {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     if (tab == null) {
+      _builtIndex = null;
+      _builtMode = null;
       return _buildEmptyState(context);
     }
 
+    // Defer the heavy first layout of a rich-text editor by one frame so a tab
+    // close / switch paints the chrome (and removes the old tab) immediately,
+    // then fills in the content on the next frame. Plain text lays out cheaply
+    // and builds inline, so the common case is unaffected.
+    final activationChanged = _builtIndex != tabIndex || _builtMode != mode;
+    if (mode == EditorMode.richText && activationChanged) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setState(() {
+          _builtIndex = tabIndex;
+          _builtMode = mode;
+        });
+      });
+      return _editorSurface(colorIndex, isDark, const SizedBox.expand());
+    }
+    _builtIndex = tabIndex;
+    _builtMode = mode;
+
     _ensureQuillController(tab, tabIndex);
 
+    return _editorSurface(
+      colorIndex,
+      isDark,
+      mode == EditorMode.richText
+          ? _buildRichTextEditor(tab, isDark)
+          : _buildPlainTextEditor(tab, editor, tabFontFamily, tabFontSize, showLineNumbers, isDark),
+    );
+  }
+
+  /// Editor background + accent border chrome shared by the real editor and the
+  /// one-frame placeholder, so deferring a rich-text build does not flash.
+  Widget _editorSurface(int? colorIndex, bool isDark, Widget child) {
     final borderColor = colorIndex != null
         ? accentColors[colorIndex.clamp(0, accentColors.length - 1)]
             .withValues(alpha: 0.45)
@@ -133,9 +191,7 @@ class ScribEditorState extends State<ScribEditor> {
                 )
               : null,
         ),
-        child: mode == EditorMode.richText
-            ? _buildRichTextEditor(tab, isDark)
-            : _buildPlainTextEditor(tab, editor, tabFontFamily, tabFontSize, showLineNumbers, isDark),
+        child: child,
       ),
     );
   }

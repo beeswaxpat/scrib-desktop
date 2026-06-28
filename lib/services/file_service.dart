@@ -229,9 +229,10 @@ class ScribFileWriteException implements Exception {
 ///
 /// .scrb v3 (current): [SCRB 4B][ver 1B][kdfId 1B][iters u32be 4B][IV 16B][salt 32B][HMAC 32B][ct]
 /// .scrb v2 (legacy):  [SCRB 4B][ver 1B][IV 16B][salt 32B][HMAC 32B][ct] — still read.
-/// Key derivation: PBKDF2-SHA256 (v2: fixed 100k; v3: per-file, default 600k),
-/// 64-byte output (32 enc + 32 mac). Encrypt-then-MAC; the MAC authenticates the
-/// version, KDF parameters, IV, salt and ciphertext.
+/// Key derivation: PBKDF2-SHA256 (v2: fixed 100k; v3: per-file, default 100k —
+/// see scrbV3DefaultIterations for why it is not yet raised), 64-byte output
+/// (32 enc + 32 mac). Encrypt-then-MAC; the MAC authenticates the version, KDF
+/// parameters, IV, salt and ciphertext.
 ///
 /// All writes are atomic on Windows via MoveFileExW — see atomic_write.dart.
 class FileService {

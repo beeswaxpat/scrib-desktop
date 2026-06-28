@@ -16,15 +16,25 @@ class SaveResult {
   final bool extensionChanged;
   final String? error;
 
+  /// Non-fatal advisory surfaced to the user (e.g. the original plaintext file
+  /// could not be removed after encrypting). The save itself still succeeded.
+  final String? warning;
+
   const SaveResult({
     required this.ok,
     this.newPath,
     this.extensionChanged = false,
     this.error,
+    this.warning,
   });
 
-  factory SaveResult.success({String? newPath, bool extensionChanged = false}) =>
-      SaveResult(ok: true, newPath: newPath, extensionChanged: extensionChanged);
+  factory SaveResult.success(
+          {String? newPath, bool extensionChanged = false, String? warning}) =>
+      SaveResult(
+          ok: true,
+          newPath: newPath,
+          extensionChanged: extensionChanged,
+          warning: warning);
   factory SaveResult.failure(String error) =>
       SaveResult(ok: false, error: error);
 }
@@ -66,7 +76,17 @@ class FileOperations {
         tab.password ??= passwordForNewEncryption;
         await editor.saveActiveTabAs(newPath,
             encrypted: true, password: tab.password);
-        return SaveResult.success(newPath: newPath, extensionChanged: true);
+        // Remove the now-orphaned plaintext original — leaving it on disk would
+        // defeat the point of encrypting.
+        final removed = await _deleteOldFile(currentPath, newPath);
+        return SaveResult.success(
+          newPath: newPath,
+          extensionChanged: true,
+          warning: removed
+              ? null
+              : 'Encrypted copy saved, but the original unencrypted file could '
+                  'not be removed. Delete it manually.',
+        );
       }
 
       // Case B: tab switched to plain, but file on disk is .scrb
@@ -81,6 +101,9 @@ class FileOperations {
         } else {
           await editor.saveActiveTabAs(newPath);
         }
+        // Remove the now-orphaned encrypted original so a stale .scrb does not
+        // linger alongside the decrypted file.
+        await _deleteOldFile(currentPath, newPath);
         return SaveResult.success(newPath: newPath, extensionChanged: true);
       }
 
@@ -175,6 +198,21 @@ class FileOperations {
     } catch (e) {
       if (kDebugMode) debugPrint('Save-as failed: $e');
       return SaveResult.failure(e.toString());
+    }
+  }
+
+  /// Best-effort removal of the pre-swap original after an encrypt/decrypt that
+  /// changed the extension. Never deletes when the path did not actually change.
+  /// Returns true if the old file is gone (deleted or already absent).
+  Future<bool> _deleteOldFile(String oldPath, String newPath) async {
+    if (oldPath == newPath) return true;
+    try {
+      final f = File(oldPath);
+      if (await f.exists()) await f.delete();
+      return true;
+    } catch (e) {
+      if (kDebugMode) debugPrint('Could not remove old file $oldPath: $e');
+      return false;
     }
   }
 
