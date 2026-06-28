@@ -49,6 +49,11 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 - Headings (H1–H3), bullet lists, numbered lists, block quotes
 - Text alignment (left, center, right, justify) and indent/outdent
 - Insert images (Insert menu or the rich-text toolbar): PNG, JPEG, GIF, WebP, BMP, SVG, TIFF, TGA, ICO, PSD and more. Images are embedded in the note itself, so inside a `.scrb` they are encrypted along with the text. Large images are downscaled on insert.
+- Images sit inline with text: type to the left or right, press Enter for above or below, align them, and resize or remove them on hover. The size is stored on the image and survives save and reopen.
+- Insert tables: a grid picker chooses the size (up to 8 columns by 10 rows), cells are edited in place with a header row, and a hover toolbar adds or removes rows and columns. Tables are stored in the note, so inside a `.scrb` they are encrypted with the text.
+
+**Tools**
+- Built-in calculator (Insert menu or the rich-text toolbar): evaluates as you type with operator precedence, parentheses, powers, modulo and decimals, keeps a short history, and can insert the result at the cursor in either editing mode. It uses a small built-in parser, not `eval`, so a note cannot run code through it.
 
 **Search**
 - Find within current tab (`Ctrl+F`)
@@ -138,14 +143,18 @@ lib/
     settings_service.dart           Persistent settings (Hive)
     rtf_service.dart                Quill Delta <-> RTF conversion
     image_embed_service.dart        Image pick / decode / downscale to data URI
+    table_embed.dart                Table model + JSON codec (custom embed)
+    calc_evaluator.dart             Calculator expression parser (no eval)
   dialogs/
     password_dialog.dart            Password entry / set-password dialogs (strength meter)
     about_dialog.dart               About Scrib
     confirm_dialog.dart             Unsaved-changes / confirm / font-size dialogs
     shortcuts_dialog.dart           Keyboard shortcuts reference (F1)
+    calculator_dialog.dart          Built-in calculator
   widgets/
     editor_widget.dart              Plain text + rich text editor
-    image_embed_builder.dart        Renders image embeds (raster + SVG)
+    image_embed_builder.dart        Renders inline, resizable image embeds (raster + SVG)
+    table_embed_builder.dart        Renders editable table embeds + size picker
     formatting_toolbar_widget.dart  Rich text formatting toolbar
     toolbar_widget.dart             Quick-action toolbar (plain text)
     tab_bar_widget.dart             Tab bar with rename, color, close, right-click menu
@@ -220,7 +229,7 @@ Encrypted tabs display a gold lock icon.
 |---|---|
 | **File** | New, Open, Recent Files, Save, Save As, Set Save Location, Close Tab |
 | **Edit** | Undo, Redo, Cut, Copy, Paste, Select All, Find, Find & Replace, Search All Tabs |
-| **Insert** | Image (rich text mode) |
+| **Insert** | Image (rich text mode), Table (rich text mode), Calculator |
 | **View** | Increase/Decrease/Default Text Size, Line Numbers toggle, Auto-Save toggle, Theme (System/Light/Dark) |
 | **Security** | Encrypt File / Decrypt File |
 | **Help** | Keyboard Shortcuts, About Scrib |

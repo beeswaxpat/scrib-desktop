@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import '../dialogs/about_dialog.dart';
+import '../dialogs/calculator_dialog.dart';
 import '../dialogs/confirm_dialog.dart';
 import '../dialogs/password_dialog.dart';
 import '../dialogs/shortcuts_dialog.dart';
@@ -17,6 +18,7 @@ import '../services/settings_service.dart';
 import '../widgets/tab_bar_widget.dart';
 import '../widgets/editor_widget.dart';
 import '../widgets/image_embed_builder.dart';
+import '../widgets/table_embed_builder.dart';
 import '../widgets/formatting_toolbar_widget.dart';
 import '../widgets/status_bar_widget.dart';
 import '../widgets/toolbar_widget.dart';
@@ -420,6 +422,15 @@ class _MainScreenState extends State<MainScreen> {
               onPressed: () => _insertImage(context),
               child: const Text('Image...'),
             ),
+            MenuItemButton(
+              onPressed: () => _insertTable(context),
+              child: const Text('Table...'),
+            ),
+            const Divider(),
+            MenuItemButton(
+              onPressed: () => _openCalculator(context),
+              child: const Text('Calculator...'),
+            ),
           ],
           child: const Text('Insert'),
         ),
@@ -805,6 +816,53 @@ class _MainScreenState extends State<MainScreen> {
     }
     final error = await pickAndInsertImage(controller);
     if (error != null && context.mounted) _showSnack(context, error);
+  }
+
+  Future<void> _insertTable(BuildContext context) async {
+    final controller = _activeQuill.value;
+    if (controller == null) {
+      _showSnack(context, 'Switch to Rich Text (Ctrl+M) to insert tables.');
+      return;
+    }
+    await pickAndInsertTable(context, controller);
+  }
+
+  /// Opens the calculator. The result is inserted at the cursor, working in both
+  /// rich-text (Quill) and plain-text tabs.
+  void _openCalculator(BuildContext context) {
+    final editor = context.read<EditorProvider>();
+    final tab = editor.activeTab;
+    showCalculatorDialog(
+      context,
+      onInsert: (result) {
+        if (tab == null) return;
+        if (tab.mode == EditorMode.richText) {
+          final controller = _activeQuill.value;
+          if (controller == null) return;
+          final sel = controller.selection;
+          final index = sel.isValid ? sel.start : 0;
+          final length = sel.isValid ? sel.end - sel.start : 0;
+          controller.replaceText(
+            index,
+            length,
+            result,
+            TextSelection.collapsed(offset: index + result.length),
+          );
+        } else {
+          final c = tab.controller;
+          final sel = c.selection;
+          final start =
+              sel.isValid ? sel.start.clamp(0, c.text.length) : c.text.length;
+          final end = sel.isValid ? sel.end.clamp(0, c.text.length) : start;
+          final next = c.text.replaceRange(start, end, result);
+          c.value = TextEditingValue(
+            text: next,
+            selection: TextSelection.collapsed(offset: start + result.length),
+          );
+          editor.onContentChanged();
+        }
+      },
+    );
   }
 
   Future<void> _closeOtherTabs(BuildContext context, int index) async {

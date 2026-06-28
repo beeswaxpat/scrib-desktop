@@ -4,6 +4,40 @@ All notable changes to Scrib Desktop are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] - 2026-06-28 - Movable images, tables, and a built-in calculator
+
+A rich-text editing pass. **The `.scrb` file format and settings schema are
+unchanged**: tables and image sizing are stored inside the note's own content,
+so existing files open untouched and a note without these features is
+byte-identical to before.
+
+### Added
+- **Images now sit inline with text.** An image behaves like a large character
+  on the line, so you can type to its left or right, press Enter to put text
+  above or below it, and use the alignment buttons (left, center, right) to place
+  it. This replaces the old fixed full-width block, which could not have text
+  beside it.
+- **Resize and remove images on hover.** Hovering an image shows controls to make
+  it smaller or larger, or remove it. The chosen size is stored on the image and
+  survives save and reopen.
+- **Insert tables.** A table button (Insert menu and rich-text toolbar) opens a
+  grid picker: drag across it to choose the size, up to 8 columns by 10 rows.
+  Cells are edited in place, the first row is styled as a header, and a hover
+  toolbar adds or removes rows and columns or deletes the table. A table is
+  stored inside the note, so in a `.scrb` it is AES-256 encrypted with the text.
+- **Built-in calculator.** Insert menu and rich-text toolbar. It evaluates as you
+  type (operator precedence, parentheses, powers, modulo, decimals), keeps a
+  short history, and an Insert result button drops the answer at the cursor in
+  either plain-text or rich-text notes.
+
+### Security
+- The calculator uses a small built-in expression parser, not `eval` or a
+  third-party math package, so a note can never run code through it.
+
+### Notes
+- Tables and inline image sizing exist in rich-text mode only. Saving to `.rtf`
+  is still text-only (it drops images and tables); `.scrb` preserves everything.
+
 ## [1.5.0] - 2026-06-27 - Image embeds
 
 Rich-text notes can now hold images. The `.scrb` format and settings schema are

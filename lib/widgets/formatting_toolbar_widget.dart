@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 import '../constants.dart';
+import '../dialogs/calculator_dialog.dart';
 import 'image_embed_builder.dart';
+import 'table_embed_builder.dart';
 
 /// Full-featured formatting toolbar for rich text mode.
 /// Provides WordPad-style formatting options: headings, text styling,
@@ -285,6 +287,24 @@ class ScribFormattingToolbar extends StatelessWidget {
                 isDark: isDark,
               ),
 
+              // --- Insert table ---
+              _FormatButton(
+                icon: Icons.grid_on,
+                tooltip: 'Insert Table',
+                isActive: false,
+                onPressed: () => pickAndInsertTable(context, controller),
+                isDark: isDark,
+              ),
+
+              // --- Calculator ---
+              _FormatButton(
+                icon: Icons.calculate_outlined,
+                tooltip: 'Calculator',
+                isActive: false,
+                onPressed: () => _onCalculator(context),
+                isDark: isDark,
+              ),
+
               const Spacer(),
 
               Text(
@@ -312,6 +332,23 @@ class ScribFormattingToolbar extends StatelessWidget {
         behavior: SnackBarBehavior.floating,
       ));
     }
+  }
+
+  void _onCalculator(BuildContext context) {
+    showCalculatorDialog(
+      context,
+      onInsert: (result) {
+        final sel = controller.selection;
+        final index = sel.isValid ? sel.start : 0;
+        final length = sel.isValid ? sel.end - sel.start : 0;
+        controller.replaceText(
+          index,
+          length,
+          result,
+          TextSelection.collapsed(offset: index + result.length),
+        );
+      },
+    );
   }
 
   void _toggleInline(Attribute attr) {
