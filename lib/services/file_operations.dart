@@ -59,6 +59,9 @@ class FileOperations {
   }) async {
     final tab = editor.activeTab;
     if (tab == null) return SaveResult.failure('No active tab');
+    // A locked tab holds no decrypted content — any write path from here
+    // would clobber the encrypted file with an empty document.
+    if (tab.isLocked) return SaveResult.failure('Tab is locked');
     if (tab.filePath == null) return SaveResult.failure('Needs save-as');
 
     final currentPath = tab.filePath!;
@@ -141,6 +144,7 @@ class FileOperations {
   }) async {
     final tab = editor.activeTab;
     if (tab == null) return SaveResult.failure('No active tab');
+    if (tab.isLocked) return SaveResult.failure('Tab is locked');
 
     String extension;
     if (tab.isEncrypted) {

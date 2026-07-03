@@ -43,6 +43,8 @@ const Map<String, List<List<String>>> _shortcutGroups = {
   'Editor': [
     ['Toggle Plain / Rich text', 'Ctrl+M'],
     ['Encrypt / Decrypt', 'Ctrl+E'],
+    ['Lock / Unlock tab', 'Ctrl+L'],
+    ['Command palette', 'Ctrl+Shift+P'],
     ['Keyboard shortcuts', 'F1'],
   ],
 };

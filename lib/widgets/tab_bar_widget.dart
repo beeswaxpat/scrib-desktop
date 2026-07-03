@@ -222,14 +222,17 @@ class _ScribTabBarState extends State<ScribTabBar> {
                               ),
                             ),
                           ),
-                        // Encryption icon
+                        // Encryption icon — gold while the tab is locked
+                        // (content wiped from memory), accent when unlocked.
                         if (tab.isEncrypted)
                           Padding(
                             padding: const EdgeInsets.only(right: 4),
                             child: Icon(
                               Icons.lock,
                               size: 12,
-                              color: tabColor ?? colorScheme.primary,
+                              color: tab.isLocked
+                                  ? const Color(0xFFFBBF24)
+                                  : (tabColor ?? colorScheme.primary),
                             ),
                           ),
                         // File name (or inline rename TextField)

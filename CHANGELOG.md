@@ -4,6 +4,47 @@ All notable changes to Scrib Desktop are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] - 2026-07-03 - Locked tabs, auto-lock, session restore, and a command palette
+
+A security and workflow pass built around one idea: an encrypted note should
+be able to go back to being encrypted without closing your workspace. **The
+`.scrb` file format and settings schema are unchanged**; existing files open
+untouched.
+
+### Added
+- **Lock a tab (`Ctrl+L`).** Locking an encrypted tab saves any unsaved
+  changes, then wipes the decrypted content and the password from the tab's
+  state. The tab stays open and shows a lock screen; re-entering the password
+  unlocks it in place. Security menu also has **Lock All Encrypted Tabs**.
+- **Auto-lock.** Optionally lock every encrypted tab after 1, 5, or 15
+  minutes without a keystroke or click (Security menu, off by default).
+- **Session restore.** Scrib now reopens the tabs you had open when you quit,
+  including the active tab and per-tab colors. Encrypted files come back
+  **locked**: launch never prompts for a password and never decrypts anything
+  you did not ask for. The stored session records file paths only, never
+  content or passwords. Toggle it in the View menu ("Reopen Tabs on Launch");
+  turning it off also deletes the stored session record.
+- **Command palette (`Ctrl+Shift+P`).** Fuzzy-search every command in the app:
+  file operations, search, insert, view, theme, security, and tab navigation.
+  Arrow keys plus Enter run a command without touching the mouse.
+- **Change Password** (Security menu). Re-encrypts the file with a new
+  password in one step (and persists any unsaved edits while doing so).
+
+### Security
+- A locked tab can never be written to disk: every save path (manual save,
+  Save As, auto-save, save-all-on-quit) refuses locked tabs, so the encrypted
+  file on disk cannot be clobbered by an empty in-memory document.
+- Locking disposes the rich-text editor's in-memory document object, and the
+  lock screen replaces the editor widget entirely while locked.
+- Auto-lock saves before wiping, so it never discards unsaved work; a dirty
+  encrypted tab whose password is no longer in memory is left untouched
+  rather than losing changes.
+
+### Notes
+- Only encrypted notes that exist on disk can lock (a never-saved encrypted
+  tab has nowhere to persist its content first).
+- Session restore skips files that were moved or deleted since the last quit.
+
 ## [1.6.0] - 2026-06-28 - Movable images, tables, and a built-in calculator
 
 A rich-text editing pass. **The `.scrb` file format and settings schema are

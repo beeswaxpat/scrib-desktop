@@ -53,7 +53,7 @@ class ScribStatusBar extends StatelessWidget {
             const SizedBox(width: 4),
             Text(
               tab.isEncrypted
-                  ? 'Encrypted (.scrb)'
+                  ? (tab.isLocked ? 'Locked (.scrb)' : 'Encrypted (.scrb)')
                   : (tab.filePath?.endsWith('.rtf') == true ? '.rtf' : '.txt'),
               style: TextStyle(
                 fontSize: 11,

@@ -64,9 +64,16 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 - Toggle encryption on any tab with `Ctrl+E`
 - AES-256-CBC + HMAC-SHA256 (Encrypt-then-MAC)
 - PBKDF2-SHA256 key derivation, 100,000 iterations
+- **Lock a tab with `Ctrl+L`**: unsaved changes are saved, then the decrypted content and password are wiped from the tab's state. The tab stays open as a lock screen until you re-enter the password.
+- **Auto-lock**: optionally lock every encrypted tab after 1, 5, or 15 minutes of inactivity (Security menu, off by default)
+- **Change Password** (Security menu) re-encrypts the file with a new password in one step
 - Encrypting a file removes the plaintext original from disk (no stray copy left behind)
 - Password strength meter, no-recovery reminder, and Caps Lock warning in the set-password dialog
 - Encryption runs in a background isolate, so the UI stays responsive
+
+**Workspace**
+- **Session restore**: reopen the tabs you had open last time, at launch. Encrypted files come back locked, so launch never asks for a password and never decrypts anything unasked. Toggle in the View menu; turning it off also deletes the stored session record.
+- **Command palette (`Ctrl+Shift+P`)**: fuzzy-search every command in the app and run it from the keyboard
 
 **File Format Support**
 - **Open:** `.txt`, `.scrb`, `.rtf`, `.md`, `.log`, `.csv`, `.json`, `.xml`, `.yaml`, `.yml`, `.ini`, `.cfg`
@@ -95,6 +102,8 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 | `Ctrl+H` | Find & Replace |
 | `Ctrl+Shift+F` | Search all tabs |
 | `Ctrl+E` | Toggle encryption |
+| `Ctrl+L` | Lock / unlock tab |
+| `Ctrl+Shift+P` | Command palette |
 | `Ctrl+M` | Toggle plain text / rich text |
 | `Ctrl+Z` | Undo |
 | `Ctrl+Shift+Z` | Redo |
@@ -219,7 +228,7 @@ Scrib does **not** defend against:
 
 The bottom bar shows: **Words** · **Characters** · **Lines** · **UTF-8** · **Plain/Rich Text** · **Encryption status**
 
-Encrypted tabs display a gold lock icon.
+Encrypted tabs display a gold lock icon. A locked tab reads "Locked (.scrb)" and its tab-bar lock turns gold until it is unlocked.
 
 ---
 
@@ -230,9 +239,9 @@ Encrypted tabs display a gold lock icon.
 | **File** | New, Open, Recent Files, Save, Save As, Set Save Location, Close Tab |
 | **Edit** | Undo, Redo, Cut, Copy, Paste, Select All, Find, Find & Replace, Search All Tabs |
 | **Insert** | Image (rich text mode), Table (rich text mode), Calculator |
-| **View** | Increase/Decrease/Default Text Size, Line Numbers toggle, Auto-Save toggle, Theme (System/Light/Dark) |
-| **Security** | Encrypt File / Decrypt File |
-| **Help** | Keyboard Shortcuts, About Scrib |
+| **View** | Increase/Decrease/Default Text Size, Line Numbers toggle, Auto-Save toggle, Reopen Tabs on Launch toggle, Theme (System/Light/Dark) |
+| **Security** | Encrypt File / Decrypt File, Change Password, Lock Tab / Unlock Tab, Lock All Encrypted Tabs, Auto-Lock Encrypted Tabs (Off / 1 / 5 / 15 min) |
+| **Help** | Command Palette, Keyboard Shortcuts, About Scrib |
 
 ---
 

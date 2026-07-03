@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../constants.dart';
@@ -42,6 +43,11 @@ class EditorTab {
   String tabFontFamily; // Per-tab font family (plain text and rich text default)
   double tabFontSize;   // Per-tab font size
 
+  /// A locked tab is a file-backed .scrb whose decrypted content and password
+  /// are NOT in memory. It renders as a lock screen until the user re-enters
+  /// the password (which routes through [EditorProvider.openScrbFile]).
+  bool isLocked;
+
   /// Last pre-mode-toggle snapshot. Consumed once by revertModeToggle() and
   /// cleared on any subsequent mode change or tab save.
   EditorSnapshot? _preToggleSnapshot;
@@ -60,6 +66,7 @@ class EditorTab {
     this.savedDeltaJson = '',
     this.tabFontFamily = 'Calibri',
     this.tabFontSize = 14.0,
+    this.isLocked = false,
   }) : savedContent = content,
        controller = TextEditingController(text: content),
        undoController = UndoHistoryController();
@@ -101,6 +108,25 @@ class EditorTab {
     mode = snap.mode;
     controller.text = snap.plainText;
     deltaJson = snap.deltaJson;
+    _preToggleSnapshot = null;
+  }
+
+  /// Whether this tab can be locked right now: it must be an encrypted file on
+  /// disk, not already locked, and hold no unsaved changes that would be lost
+  /// (a dirty tab is saved by [EditorProvider.lockTab] first, which needs the
+  /// password to still be in memory).
+  bool get canLock =>
+      isEncrypted && !isLocked && filePath != null && (!isDirty || password != null);
+
+  /// Wipe the decrypted content and password from this tab's state and mark it
+  /// locked. The caller is responsible for persisting unsaved changes first.
+  void lock() {
+    isLocked = true;
+    password = null;
+    controller.clear();
+    savedContent = '';
+    deltaJson = '';
+    savedDeltaJson = '';
     _preToggleSnapshot = null;
   }
 
@@ -148,13 +174,23 @@ class EditorProvider extends ChangeNotifier {
   // Auto-save timer — started/restarted whenever the interval setting changes.
   Timer? _autoSaveTimer;
 
+  // Auto-lock: a coarse periodic check compares the last user activity against
+  // the configured idle threshold and locks every lockable encrypted tab.
+  Timer? _autoLockTimer;
+  DateTime _lastActivity = DateTime.now();
+  static const _autoLockPollInterval = Duration(seconds: 10);
+
   EditorProvider(this._fileService, this._settingsService) {
     _settingsService.addListener(_onSettingsChanged);
     _updateAutoSave();
+    _updateAutoLock();
     addNewTab();
   }
 
-  void _onSettingsChanged() => _updateAutoSave();
+  void _onSettingsChanged() {
+    _updateAutoSave();
+    _updateAutoLock();
+  }
 
   void _updateAutoSave() {
     _autoSaveTimer?.cancel();
@@ -165,6 +201,22 @@ class EditorProvider extends ChangeNotifier {
       });
     }
   }
+
+  void _updateAutoLock() {
+    _autoLockTimer?.cancel();
+    final minutes = _settingsService.autoLockMinutes;
+    if (minutes > 0) {
+      _autoLockTimer = Timer.periodic(_autoLockPollInterval, (_) {
+        if (DateTime.now().difference(_lastActivity).inSeconds >= minutes * 60) {
+          unawaited(lockAllEncrypted());
+        }
+      });
+    }
+  }
+
+  /// Called by the UI on any pointer or key event so the auto-lock idle clock
+  /// resets. Deliberately does NOT notify — it fires on every keystroke.
+  void noteActivity() => _lastActivity = DateTime.now();
 
   Future<void> _autoSaveAll() async {
     await _saveDirtyFileBackedTabs();
@@ -214,6 +266,9 @@ class EditorProvider extends ChangeNotifier {
   Future<bool> _saveTabToDisk(EditorTab tab) async {
     final path = tab.filePath;
     if (path == null) return false;
+    // A locked tab's in-memory content is empty by design — writing it would
+    // destroy the encrypted file. Locked tabs are never saved.
+    if (tab.isLocked) return false;
     final content = tab.getSaveContent();
     if (tab.isEncrypted) {
       if (tab.password == null) return false;
@@ -239,6 +294,169 @@ class EditorProvider extends ChangeNotifier {
   bool get showGlobalSearch => _showGlobalSearch;
   String get pendingFindQuery => _pendingFindQuery;
   bool get hasUnsavedChanges => _tabs.any((tab) => tab.isDirty);
+
+  // ── Tab locking ─────────────────────────────────────────────────────────
+
+  /// Lock [tab]: persist any unsaved changes (requires the password to still
+  /// be in memory), then wipe the decrypted content and password from the tab.
+  /// Returns false if the tab is not lockable (see [EditorTab.canLock]).
+  Future<bool> lockTab(EditorTab tab) async {
+    if (!_tabs.contains(tab) || !tab.canLock) return false;
+    if (tab.isDirty) {
+      // canLock guarantees password != null here.
+      if (!await _saveTabToDisk(tab)) return false;
+      tab.markSaved();
+    }
+    tab.lock();
+    _cachedActiveText = null;
+    notifyListeners();
+    return true;
+  }
+
+  /// Lock every lockable encrypted tab (manual "Lock All" and idle auto-lock).
+  /// Returns the number of tabs that were locked.
+  Future<int> lockAllEncrypted() async {
+    int locked = 0;
+    for (final tab in List.of(_tabs)) {
+      if (await lockTab(tab)) locked++;
+    }
+    return locked;
+  }
+
+  /// Whether any open tab is currently lockable.
+  bool get hasLockableTabs => _tabs.any((t) => t.canLock);
+
+  /// Add a locked placeholder tab for an encrypted file WITHOUT prompting for
+  /// its password (used by session restore). If the file is already open, the
+  /// existing tab is activated instead.
+  EditorTab addLockedTab(String path, {int? colorIndex}) {
+    final existingIndex = _tabs.indexWhere((t) => t.filePath == path);
+    if (existingIndex != -1) {
+      _activeTabIndex = existingIndex;
+      notifyListeners();
+      return _tabs[existingIndex];
+    }
+
+    final tab = EditorTab(
+      filePath: path,
+      fileName: _fileService.getFileName(path),
+      isEncrypted: true,
+      isLocked: true,
+      colorIndex: colorIndex,
+      tabFontFamily: _settingsService.fontFamily,
+      tabFontSize: _settingsService.fontSize,
+    );
+
+    if (_tabs.length == 1 && activeTab != null &&
+        activeTab!.filePath == null && !activeTab!.isDirty &&
+        activeTab!.controller.text.isEmpty) {
+      _tabs[0].dispose();
+      _tabs[0] = tab;
+      _activeTabIndex = 0;
+    } else {
+      _tabs.add(tab);
+      _activeTabIndex = _tabs.length - 1;
+    }
+
+    _cachedActiveText = null;
+    notifyListeners();
+    return tab;
+  }
+
+  /// Change the password on the active encrypted tab and re-encrypt the file
+  /// on disk immediately (also persisting any unsaved edits). If the tab has
+  /// no path yet, the new password simply applies to the next save.
+  /// Returns false when the active tab cannot have its password changed.
+  Future<bool> changeActivePassword(String newPassword) async {
+    final tab = activeTab;
+    if (tab == null || !tab.isEncrypted || tab.isLocked) return false;
+    tab.password = newPassword;
+    if (tab.filePath != null) {
+      await _fileService.writeScrbFile(
+          tab.filePath!, tab.getSaveContent(), newPassword);
+      tab.markSaved();
+    }
+    notifyListeners();
+    return true;
+  }
+
+  // ── Session persistence ─────────────────────────────────────────────────
+
+  /// Snapshot of the open file-backed tabs for session restore. Untitled tabs
+  /// have no on-disk identity and are excluded (the quit flow already refuses
+  /// to discard them while dirty). Only paths and tab colors are recorded —
+  /// never content or passwords.
+  List<Map<String, dynamic>> sessionSnapshot() => [
+        for (final tab in _tabs)
+          if (tab.filePath != null)
+            {
+              'path': tab.filePath,
+              if (tab.colorIndex != null) 'color': tab.colorIndex,
+            },
+      ];
+
+  /// Index of the active tab within [sessionSnapshot]'s entries (0 if the
+  /// active tab is untitled and therefore not part of the snapshot).
+  int get sessionActiveIndex {
+    int idx = 0;
+    for (int i = 0; i < _tabs.length; i++) {
+      if (_tabs[i].filePath == null) continue;
+      if (i == _activeTabIndex) return idx;
+      idx++;
+    }
+    return 0;
+  }
+
+  /// Reopen the tabs recorded by the last quit. Plain and RTF files load
+  /// directly; encrypted .scrb files come back as LOCKED tabs so launch never
+  /// prompts for passwords and never holds decrypted content the user hasn't
+  /// asked for. Missing or unreadable files are skipped. Returns the number of
+  /// tabs restored.
+  Future<int> restorePreviousSession() async {
+    final entries = _settingsService.sessionTabs;
+    if (entries.isEmpty) return 0;
+
+    final savedActive = _settingsService.sessionActiveIndex;
+    EditorTab? activeTarget;
+    int restored = 0;
+
+    for (int i = 0; i < entries.length; i++) {
+      final entry = entries[i];
+      final path = entry['path'];
+      if (path is! String || path.isEmpty) continue;
+      final color = entry['color'];
+      try {
+        if (!await File(path).exists()) continue;
+        final ext = _fileService.getExtension(path).toLowerCase();
+        EditorTab? opened;
+        if (ext == '.scrb') {
+          opened = addLockedTab(path, colorIndex: color is int ? color : null);
+        } else if (ext == '.rtf') {
+          final rtf = await _fileService.readRtfFile(path);
+          await openRtfFile(path, RtfService.rtfToDelta(rtf));
+          opened = activeTab;
+        } else {
+          await openFile(path);
+          opened = activeTab;
+        }
+        if (opened != null && color is int) opened.colorIndex = color;
+        if (i == savedActive) activeTarget = opened;
+        restored++;
+      } catch (_) {
+        // A file that fails to restore must never block the rest of startup.
+      }
+    }
+
+    if (activeTarget != null) {
+      final idx = _tabs.indexOf(activeTarget);
+      if (idx != -1) _activeTabIndex = idx;
+    }
+    if (restored > 0) {
+      _cachedActiveText = null;
+      notifyListeners();
+    }
+    return restored;
+  }
 
   // Tab management
   static const _months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -494,6 +712,7 @@ class EditorProvider extends ChangeNotifier {
       // The file on disk is encrypted — the tab MUST be flagged encrypted, or a
       // subsequent save writes the decrypted plaintext back out unencrypted.
       tab.isEncrypted = true;
+      tab.isLocked = false; // successful decrypt unlocks a locked placeholder
       tab.fileName = fileName;
       tab.password = password;
       tab.mode = mode;
@@ -535,7 +754,7 @@ class EditorProvider extends ChangeNotifier {
   /// Save the active tab
   Future<bool> saveActiveTab() async {
     final tab = activeTab;
-    if (tab == null) return false;
+    if (tab == null || tab.isLocked) return false;
 
     if (tab.filePath == null) {
       return false; // Need "Save As" - caller should handle
@@ -556,7 +775,7 @@ class EditorProvider extends ChangeNotifier {
   /// Save the active tab to a specific path
   Future<bool> saveActiveTabAs(String path, {bool encrypted = false, String? password}) async {
     final tab = activeTab;
-    if (tab == null) return false;
+    if (tab == null || tab.isLocked) return false;
 
     final content = tab.getSaveContent();
 
@@ -598,7 +817,7 @@ class EditorProvider extends ChangeNotifier {
   /// Toggle encryption on active tab
   void toggleEncryption() {
     final tab = activeTab;
-    if (tab == null) return;
+    if (tab == null || tab.isLocked) return;
     tab.isEncrypted = !tab.isEncrypted;
     if (!tab.isEncrypted) {
       tab.password = null;
@@ -634,7 +853,7 @@ class EditorProvider extends ChangeNotifier {
   /// Captures a one-step revert snapshot before any destructive conversion.
   void toggleEditorMode() {
     final tab = activeTab;
-    if (tab == null) return;
+    if (tab == null || tab.isLocked) return;
 
     // Snapshot before changing anything so revertModeToggle() can restore it.
     tab.capturePreToggleSnapshot();
@@ -681,7 +900,7 @@ class EditorProvider extends ChangeNotifier {
   /// Update the delta JSON for the active tab (called by QuillEditor widget)
   void updateDeltaJson(String json) {
     final tab = activeTab;
-    if (tab == null) return;
+    if (tab == null || tab.isLocked) return;
     tab.deltaJson = json;
     // Debounced notify for dirty indicator
     onContentChanged();
@@ -867,6 +1086,7 @@ class EditorProvider extends ChangeNotifier {
   void dispose() {
     _settingsService.removeListener(_onSettingsChanged);
     _autoSaveTimer?.cancel();
+    _autoLockTimer?.cancel();
     _contentDebounce?.cancel();
     for (final tab in _tabs) {
       tab.dispose();

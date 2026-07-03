@@ -48,6 +48,13 @@ void main() async {
   final fileService = FileService();
   final editorProvider = EditorProvider(fileService, settingsService);
 
+  // Reopen the previous session's tabs (best-effort, in the background so the
+  // window shows immediately). Encrypted files come back as LOCKED tabs —
+  // launch never prompts for a password and never decrypts unasked.
+  if (settingsService.restoreSession) {
+    unawaited(editorProvider.restorePreviousSession());
+  }
+
   final windowOptions = WindowOptions(
     size: Size(settingsService.windowWidth, settingsService.windowHeight),
     center: settingsService.windowX == null,
@@ -194,6 +201,18 @@ class _ScribDesktopAppState extends State<ScribDesktopApp> with WindowListener {
           }
         }
       }
+    }
+
+    // Record the open tabs (paths only — never content or passwords) so the
+    // next launch can restore them. With restore off, clear any stored
+    // session instead so no record of the workspace persists.
+    if (widget.settingsService.restoreSession) {
+      await widget.settingsService.saveSession(
+        widget.editorProvider.sessionSnapshot(),
+        widget.editorProvider.sessionActiveIndex,
+      );
+    } else {
+      await widget.settingsService.clearSession();
     }
 
     // Dispose timers/listeners before destroy so the process exits cleanly.

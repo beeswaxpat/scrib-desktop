@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 /// Scrib brand constants
 const String appName = 'Scrib';
-const String appVersion = '1.6.0';
+const String appVersion = '1.7.0';
 const String appTagline = 'No tracking. No cloud. Just notes.';
 
 /// .scrb file format magic bytes

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
 import 'package:path_provider/path_provider.dart';
@@ -127,5 +128,67 @@ class SettingsService extends ChangeNotifier {
   Future<void> setDefaultSaveLocation(String value) async {
     await _settingsBox.put('defaultSaveLocation', value);
     notifyListeners();
+  }
+
+  // Auto-lock idle threshold in minutes (0 = disabled). When enabled, every
+  // encrypted tab locks after this much user inactivity.
+  int get autoLockMinutes => _settingsBox.get('autoLockMinutes', defaultValue: 0);
+
+  Future<void> setAutoLockMinutes(int value) async {
+    await _settingsBox.put('autoLockMinutes', value);
+    notifyListeners();
+  }
+
+  // ── Session restore ────────────────────────────────────────────────────
+  // The stored session is a JSON object {tabs: [{path, color?}], active: int}
+  // written on quit. It records file PATHS only — never content or passwords.
+
+  bool get restoreSession => _settingsBox.get('restoreSession', defaultValue: true);
+
+  /// Turning restore off also clears any stored session, so disabling it
+  /// removes the record of what was open.
+  Future<void> setRestoreSession(bool value) async {
+    await _settingsBox.put('restoreSession', value);
+    if (!value) await clearSession();
+    notifyListeners();
+  }
+
+  Future<void> saveSession(List<Map<String, dynamic>> tabs, int activeIndex) async {
+    await _settingsBox.put(
+      'sessionJson',
+      jsonEncode({'tabs': tabs, 'active': activeIndex}),
+    );
+  }
+
+  Future<void> clearSession() async {
+    await _settingsBox.delete('sessionJson');
+  }
+
+  List<Map<String, dynamic>> get sessionTabs {
+    final raw = _settingsBox.get('sessionJson');
+    if (raw is! String || raw.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(raw);
+      final tabs = decoded is Map ? decoded['tabs'] : null;
+      if (tabs is! List) return const [];
+      return [
+        for (final t in tabs)
+          if (t is Map) Map<String, dynamic>.from(t),
+      ];
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  int get sessionActiveIndex {
+    final raw = _settingsBox.get('sessionJson');
+    if (raw is! String || raw.isEmpty) return 0;
+    try {
+      final decoded = jsonDecode(raw);
+      final active = decoded is Map ? decoded['active'] : null;
+      return active is int && active >= 0 ? active : 0;
+    } catch (_) {
+      return 0;
+    }
   }
 }

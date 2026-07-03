@@ -15,7 +15,11 @@ class ScribEditor extends StatefulWidget {
   /// old post-frame setState round-trip on MainScreen.
   final ValueNotifier<QuillController?>? activeQuillNotifier;
 
-  const ScribEditor({super.key, this.activeQuillNotifier});
+  /// Invoked when the user asks to unlock the active locked tab (lock-screen
+  /// button). MainScreen owns the password prompt and decrypt flow.
+  final VoidCallback? onUnlockRequested;
+
+  const ScribEditor({super.key, this.activeQuillNotifier, this.onUnlockRequested});
 
   @override
   State<ScribEditor> createState() => ScribEditorState();
@@ -74,6 +78,18 @@ class ScribEditorState extends State<ScribEditor> {
         notifier.value = _quillController;
       }
     });
+  }
+
+  /// Drop the live QuillController (used when the active tab locks). The
+  /// dispose is deferred a microtask so anything still pointing at it this
+  /// frame (toolbar buttons) is not holding a disposed controller.
+  void _teardownQuillController() {
+    final old = _quillController;
+    if (old == null) return;
+    old.removeListener(_onQuillChanged);
+    _quillController = null;
+    Future.microtask(() => old.dispose());
+    _publishQuillController();
   }
 
   /// Rebuild the QuillController when tab or mode changes
@@ -138,10 +154,25 @@ class ScribEditorState extends State<ScribEditor> {
     final tab = editor.activeTab;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
+    final isLocked = context.select<EditorProvider, bool>(
+        (e) => e.activeTab?.isLocked ?? false);
+
     if (tab == null) {
       _builtIndex = null;
       _builtMode = null;
       return _buildEmptyState(context);
+    }
+
+    // A locked tab renders a lock screen instead of an editor. Tear down any
+    // live QuillController so no decrypted document object outlives the lock,
+    // and reset the build tracking so unlocking rebuilds from scratch.
+    if (isLocked) {
+      _teardownQuillController();
+      _lastTabIndex = null;
+      _lastMode = null;
+      _builtIndex = null;
+      _builtMode = null;
+      return _editorSurface(colorIndex, isDark, _buildLockedState(context, tab));
     }
 
     // Defer the heavy first layout of a rich-text editor by one frame so a tab
@@ -279,6 +310,65 @@ class ScribEditorState extends State<ScribEditor> {
             null,
           ),
         ),
+      ),
+    );
+  }
+
+  /// Lock screen shown in place of the editor for a locked tab. The content
+  /// and password are not in memory at this point — only the file path and
+  /// name are known.
+  Widget _buildLockedState(BuildContext context, EditorTab tab) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 72,
+            height: 72,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: const Color(0xFFFBBF24).withValues(alpha: 0.12),
+              border: Border.all(
+                color: const Color(0xFFFBBF24).withValues(alpha: 0.5),
+              ),
+            ),
+            child: const Icon(Icons.lock, size: 32, color: Color(0xFFFBBF24)),
+          ),
+          const SizedBox(height: 20),
+          Text(
+            tab.fileName,
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
+              color: isDark ? const Color(0xFFE0E0E0) : const Color(0xFF1A1A1A),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'This note is locked. Its content and password are not in memory.',
+            style: TextStyle(
+              fontSize: 13,
+              color: isDark ? const Color(0xFF808080) : const Color(0xFF666666),
+            ),
+          ),
+          const SizedBox(height: 20),
+          FilledButton.icon(
+            autofocus: true,
+            onPressed: widget.onUnlockRequested,
+            icon: const Icon(Icons.key, size: 18),
+            label: const Text('Unlock'),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Ctrl+L',
+            style: TextStyle(
+              fontSize: 11,
+              color: isDark ? const Color(0xFF404040) : const Color(0xFFCCCCCC),
+            ),
+          ),
+        ],
       ),
     );
   }

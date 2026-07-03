@@ -15,6 +15,7 @@ import '../services/file_operations.dart';
 import '../services/file_service.dart';
 import '../services/rtf_service.dart';
 import '../services/settings_service.dart';
+import '../widgets/command_palette.dart';
 import '../widgets/tab_bar_widget.dart';
 import '../widgets/editor_widget.dart';
 import '../widgets/image_embed_builder.dart';
@@ -51,7 +52,22 @@ class _MainScreenState extends State<MainScreen> {
   final ValueNotifier<QuillController?> _activeQuill = ValueNotifier(null);
 
   @override
+  void initState() {
+    super.initState();
+    // Feed the auto-lock idle clock. Pointer events reset it via the Listener
+    // in build; this handler covers the keyboard (returning false so the event
+    // still reaches the focused widget).
+    HardwareKeyboard.instance.addHandler(_onGlobalKey);
+  }
+
+  bool _onGlobalKey(KeyEvent event) {
+    context.read<EditorProvider>().noteActivity();
+    return false;
+  }
+
+  @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onGlobalKey);
     _activeQuill.dispose();
     super.dispose();
   }
@@ -84,7 +100,11 @@ class _MainScreenState extends State<MainScreen> {
 
     return CallbackShortcuts(
       bindings: _buildShortcuts(context),
-      child: Focus(
+      child: Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: (_) => context.read<EditorProvider>().noteActivity(),
+        onPointerSignal: (_) => context.read<EditorProvider>().noteActivity(),
+        child: Focus(
         autofocus: true,
         child: DropTarget(
           onDragEntered: (_) => setState(() => _isDragging = true),
@@ -148,6 +168,7 @@ class _MainScreenState extends State<MainScreen> {
                       child: ScribEditor(
                         key: _editorKey,
                         activeQuillNotifier: _activeQuill,
+                        onUnlockRequested: () => _unlockActiveTab(context),
                       ),
                     ),
                     const ScribStatusBar(),
@@ -193,6 +214,7 @@ class _MainScreenState extends State<MainScreen> {
             ),
           ),
         ),
+        ),
       ),
     );
   }
@@ -233,6 +255,10 @@ class _MainScreenState extends State<MainScreen> {
         }
       },
       const SingleActivator(LogicalKeyboardKey.f1): () => showShortcutsDialog(context),
+      const SingleActivator(LogicalKeyboardKey.keyP, control: true, shift: true):
+          () => _openCommandPalette(context),
+      const SingleActivator(LogicalKeyboardKey.keyL, control: true): () =>
+          _toggleLockActiveTab(context),
     };
   }
 
@@ -243,6 +269,11 @@ class _MainScreenState extends State<MainScreen> {
     final lineNumbersOn = context.select<SettingsService, bool>((s) => s.showLineNumbers);
     final isEncryptedForMenu = context.select<EditorProvider, bool>((e) => e.activeTab?.isEncrypted ?? false);
     final activeMode = context.select<EditorProvider, EditorMode?>((e) => e.activeTab?.mode);
+    final isLockedForMenu = context.select<EditorProvider, bool>((e) => e.activeTab?.isLocked ?? false);
+    final canLockActive = context.select<EditorProvider, bool>((e) => e.activeTab?.canLock ?? false);
+    final hasLockable = context.select<EditorProvider, bool>((e) => e.hasLockableTabs);
+    final autoLockMinutes = context.select<SettingsService, int>((s) => s.autoLockMinutes);
+    final restoreSessionOn = context.select<SettingsService, bool>((s) => s.restoreSession);
     final settings = context.read<SettingsService>();
 
     return MenuBar(
@@ -466,6 +497,13 @@ class _MainScreenState extends State<MainScreen> {
                   : const SizedBox(width: 16),
               child: const Text('Auto-Save'),
             ),
+            MenuItemButton(
+              onPressed: () => settings.setRestoreSession(!restoreSessionOn),
+              leadingIcon: restoreSessionOn
+                  ? const Icon(Icons.check, size: 16)
+                  : const SizedBox(width: 16),
+              child: const Text('Reopen Tabs on Launch'),
+            ),
             const Divider(),
             SubmenuButton(
               menuChildren: [
@@ -500,14 +538,59 @@ class _MainScreenState extends State<MainScreen> {
           menuChildren: [
             MenuItemButton(
               shortcut: const SingleActivator(LogicalKeyboardKey.keyE, control: true),
-              onPressed: () => _toggleEncryption(context),
-              child: Text(isEncryptedForMenu ? 'Decrypt File' : 'Encrypt File'),
+              onPressed: isLockedForMenu ? null : () => _toggleEncryption(context),
+              child: Text(isEncryptedForMenu && !isLockedForMenu
+                  ? 'Decrypt File'
+                  : 'Encrypt File'),
+            ),
+            MenuItemButton(
+              onPressed: isEncryptedForMenu && !isLockedForMenu
+                  ? () => _changePassword(context)
+                  : null,
+              child: const Text('Change Password...'),
+            ),
+            const Divider(),
+            MenuItemButton(
+              shortcut: const SingleActivator(LogicalKeyboardKey.keyL, control: true),
+              onPressed: isLockedForMenu
+                  ? () => _unlockActiveTab(context)
+                  : (canLockActive ? () => _lockActiveTab(context) : null),
+              child: Text(isLockedForMenu ? 'Unlock Tab' : 'Lock Tab'),
+            ),
+            MenuItemButton(
+              onPressed: hasLockable ? () => _lockAllTabs(context) : null,
+              child: const Text('Lock All Encrypted Tabs'),
+            ),
+            const Divider(),
+            SubmenuButton(
+              menuChildren: [
+                for (final (minutes, label) in const [
+                  (0, 'Off'),
+                  (1, 'After 1 minute'),
+                  (5, 'After 5 minutes'),
+                  (15, 'After 15 minutes'),
+                ])
+                  MenuItemButton(
+                    onPressed: () => settings.setAutoLockMinutes(minutes),
+                    leadingIcon: autoLockMinutes == minutes
+                        ? const Icon(Icons.check, size: 16)
+                        : const SizedBox(width: 16),
+                    child: Text(label),
+                  ),
+              ],
+              child: const Text('Auto-Lock Encrypted Tabs'),
             ),
           ],
           child: const Text('Security'),
         ),
         SubmenuButton(
           menuChildren: [
+            MenuItemButton(
+              shortcut: const SingleActivator(LogicalKeyboardKey.keyP,
+                  control: true, shift: true),
+              onPressed: () => _openCommandPalette(context),
+              child: const Text('Command Palette'),
+            ),
             MenuItemButton(
               shortcut: const SingleActivator(LogicalKeyboardKey.f1),
               onPressed: () => showShortcutsDialog(context),
@@ -605,6 +688,7 @@ class _MainScreenState extends State<MainScreen> {
     final editor = context.read<EditorProvider>();
     final tab = editor.activeTab;
     if (tab == null) return;
+    if (tab.isLocked) return; // nothing in memory to save
 
     if (tab.filePath == null) {
       await _saveFileAs(context);
@@ -647,6 +731,10 @@ class _MainScreenState extends State<MainScreen> {
     final editor = context.read<EditorProvider>();
     final tab = editor.activeTab;
     if (tab == null) return;
+    if (tab.isLocked) {
+      _showSnack(context, 'Unlock this tab first (Ctrl+L).');
+      return;
+    }
 
     bool processing = false;
     try {
@@ -835,7 +923,7 @@ class _MainScreenState extends State<MainScreen> {
     showCalculatorDialog(
       context,
       onInsert: (result) {
-        if (tab == null) return;
+        if (tab == null || tab.isLocked) return;
         if (tab.mode == EditorMode.richText) {
           final controller = _activeQuill.value;
           if (controller == null) return;
@@ -887,6 +975,10 @@ class _MainScreenState extends State<MainScreen> {
     final editor = context.read<EditorProvider>();
     final tab = editor.activeTab;
     if (tab == null) return;
+    if (tab.isLocked) {
+      _showSnack(context, 'Unlock this tab first (Ctrl+L).');
+      return;
+    }
 
     if (!tab.isEncrypted) {
       editor.toggleEncryption();
@@ -937,7 +1029,7 @@ class _MainScreenState extends State<MainScreen> {
   Future<void> _confirmToggleEditorMode(BuildContext context) async {
     final editor = context.read<EditorProvider>();
     final tab = editor.activeTab;
-    if (tab == null) return;
+    if (tab == null || tab.isLocked) return;
 
     if (tab.mode == EditorMode.richText) {
       final confirmed = await showScribConfirm(
@@ -968,6 +1060,279 @@ class _MainScreenState extends State<MainScreen> {
         ),
       ),
     );
+  }
+
+  // ── Tab locking ──────────────────────────────────────────────────────────
+
+  /// Ctrl+L: lock the active tab if it is unlockable-encrypted, or start the
+  /// unlock flow if it is already locked.
+  void _toggleLockActiveTab(BuildContext context) {
+    final editor = context.read<EditorProvider>();
+    final tab = editor.activeTab;
+    if (tab == null) return;
+    if (tab.isLocked) {
+      _unlockActiveTab(context);
+    } else {
+      _lockActiveTab(context);
+    }
+  }
+
+  Future<void> _lockActiveTab(BuildContext context) async {
+    final editor = context.read<EditorProvider>();
+    final tab = editor.activeTab;
+    if (tab == null || tab.isLocked) return;
+    if (!tab.isEncrypted || tab.filePath == null) {
+      _showSnack(context,
+          'Only encrypted notes saved to disk can be locked. Encrypt first (Ctrl+E).');
+      return;
+    }
+    final locked = await editor.lockTab(tab);
+    if (!locked && context.mounted) {
+      _showSnack(context, 'Could not lock: save this note first.');
+    }
+  }
+
+  Future<void> _lockAllTabs(BuildContext context) async {
+    final editor = context.read<EditorProvider>();
+    final locked = await editor.lockAllEncrypted();
+    if (!context.mounted) return;
+    _showSnack(
+        context,
+        locked == 0
+            ? 'No encrypted tabs to lock.'
+            : 'Locked $locked ${locked == 1 ? 'tab' : 'tabs'}.');
+  }
+
+  Future<void> _unlockActiveTab(BuildContext context) async {
+    final editor = context.read<EditorProvider>();
+    final tab = editor.activeTab;
+    if (tab == null || !tab.isLocked || tab.filePath == null) return;
+
+    final password = await showPasswordPrompt(
+      context,
+      title: 'Unlock ${tab.fileName}',
+      message: 'Enter the password to unlock this note.',
+    );
+    if (password == null || password.isEmpty || !context.mounted) return;
+
+    _setProcessing('Decrypting...');
+    try {
+      final success = await editor.openScrbFile(tab.filePath!, password);
+      if (!success && context.mounted) {
+        _showSnack(context, 'Wrong password or corrupt file');
+      }
+    } on ScribFileReadException {
+      if (context.mounted) _showSnack(context, 'Could not read file');
+    } catch (_) {
+      if (context.mounted) _showSnack(context, 'Could not unlock this note');
+    } finally {
+      _setProcessing(null);
+    }
+  }
+
+  Future<void> _changePassword(BuildContext context) async {
+    final editor = context.read<EditorProvider>();
+    final tab = editor.activeTab;
+    if (tab == null || !tab.isEncrypted || tab.isLocked) return;
+
+    final newPassword = await showSetPasswordDialog(context);
+    if (newPassword == null || !context.mounted) return;
+
+    _setProcessing('Encrypting...');
+    try {
+      final changed = await editor.changeActivePassword(newPassword);
+      if (!context.mounted) return;
+      if (!changed) {
+        _showSnack(context, 'Could not change the password.');
+      } else if (tab.filePath != null) {
+        _showSnack(context, 'Password changed and file re-encrypted.');
+      } else {
+        _showSnack(context, 'Password set. It applies when you save.');
+      }
+    } catch (_) {
+      if (context.mounted) _showSnack(context, 'Could not change the password.');
+    } finally {
+      _setProcessing(null);
+    }
+  }
+
+  // ── Command palette ──────────────────────────────────────────────────────
+
+  void _openCommandPalette(BuildContext context) {
+    showCommandPalette(context, _paletteCommands(context));
+  }
+
+  /// Build the palette's command list from current state, so titles like
+  /// Encrypt/Decrypt and Lock/Unlock reflect the active tab.
+  List<ScribCommand> _paletteCommands(BuildContext context) {
+    final editor = context.read<EditorProvider>();
+    final settings = context.read<SettingsService>();
+    final tab = editor.activeTab;
+    final isLocked = tab?.isLocked ?? false;
+    final isEncrypted = tab?.isEncrypted ?? false;
+    final isRich = tab?.mode == EditorMode.richText;
+
+    return [
+      ScribCommand(
+        category: 'File', title: 'New Tab', icon: Icons.note_add_outlined,
+        shortcut: 'Ctrl+N', action: () => editor.addNewTab(),
+      ),
+      ScribCommand(
+        category: 'File', title: 'Open File...', icon: Icons.folder_open,
+        shortcut: 'Ctrl+O', action: () => _openFileDialog(context),
+      ),
+      ScribCommand(
+        category: 'File', title: 'Save', icon: Icons.save_outlined,
+        shortcut: 'Ctrl+S', action: () => _saveFile(context),
+      ),
+      ScribCommand(
+        category: 'File', title: 'Save As...', icon: Icons.save_as_outlined,
+        shortcut: 'Ctrl+Shift+S', action: () => _saveFileAs(context),
+      ),
+      ScribCommand(
+        category: 'File', title: 'Close Tab', icon: Icons.close,
+        shortcut: 'Ctrl+W', action: () => _closeCurrentTab(context),
+      ),
+      ScribCommand(
+        category: 'File', title: 'Set Save Location...', icon: Icons.folder_outlined,
+        action: () => _showSaveLocationPicker(context),
+      ),
+      ScribCommand(
+        category: 'File',
+        title: settings.restoreSession
+            ? 'Reopen Tabs on Launch: Turn Off'
+            : 'Reopen Tabs on Launch: Turn On',
+        icon: Icons.history,
+        action: () => settings.setRestoreSession(!settings.restoreSession),
+      ),
+      ScribCommand(
+        category: 'Edit', title: 'Find...', icon: Icons.search,
+        shortcut: 'Ctrl+F', action: () => editor.openFind(),
+      ),
+      ScribCommand(
+        category: 'Edit', title: 'Find & Replace...', icon: Icons.find_replace,
+        shortcut: 'Ctrl+H', action: () => editor.openFindReplace(),
+      ),
+      ScribCommand(
+        category: 'Edit', title: 'Search All Tabs...', icon: Icons.manage_search,
+        shortcut: 'Ctrl+Shift+F', action: () => editor.toggleGlobalSearch(),
+      ),
+      if (!isLocked)
+        ScribCommand(
+          category: 'Edit',
+          title: isRich ? 'Switch to Plain Text' : 'Switch to Rich Text',
+          icon: Icons.text_format,
+          shortcut: 'Ctrl+M',
+          action: () => _confirmToggleEditorMode(context),
+        ),
+      if (!isLocked) ...[
+        ScribCommand(
+          category: 'Insert', title: 'Image...', icon: Icons.image_outlined,
+          action: () => _insertImage(context),
+        ),
+        ScribCommand(
+          category: 'Insert', title: 'Table...', icon: Icons.table_chart_outlined,
+          action: () => _insertTable(context),
+        ),
+        ScribCommand(
+          category: 'Insert', title: 'Calculator...', icon: Icons.calculate_outlined,
+          action: () => _openCalculator(context),
+        ),
+      ],
+      ScribCommand(
+        category: 'View', title: 'Increase Text Size', icon: Icons.text_increase,
+        shortcut: 'Ctrl+=', action: () => _zoomIn(context),
+      ),
+      ScribCommand(
+        category: 'View', title: 'Decrease Text Size', icon: Icons.text_decrease,
+        shortcut: 'Ctrl+-', action: () => _zoomOut(context),
+      ),
+      ScribCommand(
+        category: 'View', title: 'Default Text Size', icon: Icons.text_fields,
+        shortcut: 'Ctrl+0', action: () => _resetZoom(context),
+      ),
+      ScribCommand(
+        category: 'View',
+        title: settings.showLineNumbers ? 'Hide Line Numbers' : 'Show Line Numbers',
+        icon: Icons.format_list_numbered,
+        action: () => settings.setShowLineNumbers(!settings.showLineNumbers),
+      ),
+      ScribCommand(
+        category: 'View',
+        title: settings.autoSaveInterval > 0 ? 'Turn Auto-Save Off' : 'Turn Auto-Save On',
+        icon: Icons.save_alt,
+        action: () => settings.setAutoSaveInterval(
+            settings.autoSaveInterval > 0 ? 0 : 30),
+      ),
+      ScribCommand(
+        category: 'View', title: 'Theme: System', icon: Icons.brightness_auto,
+        action: () => settings.setThemeMode(0),
+      ),
+      ScribCommand(
+        category: 'View', title: 'Theme: Light', icon: Icons.light_mode_outlined,
+        action: () => settings.setThemeMode(1),
+      ),
+      ScribCommand(
+        category: 'View', title: 'Theme: Dark', icon: Icons.dark_mode_outlined,
+        action: () => settings.setThemeMode(2),
+      ),
+      ScribCommand(
+        category: 'View', title: 'Next Tab', icon: Icons.tab,
+        shortcut: 'Ctrl+Tab', action: () => _nextTab(context),
+      ),
+      ScribCommand(
+        category: 'View', title: 'Previous Tab', icon: Icons.tab_unselected,
+        shortcut: 'Ctrl+Shift+Tab', action: () => _prevTab(context),
+      ),
+      if (!isLocked)
+        ScribCommand(
+          category: 'Security',
+          title: isEncrypted ? 'Decrypt File' : 'Encrypt File',
+          icon: isEncrypted ? Icons.lock_open : Icons.lock_outline,
+          shortcut: 'Ctrl+E',
+          action: () => _toggleEncryption(context),
+        ),
+      if (isLocked)
+        ScribCommand(
+          category: 'Security', title: 'Unlock Tab', icon: Icons.key,
+          shortcut: 'Ctrl+L', action: () => _unlockActiveTab(context),
+        )
+      else if (tab?.canLock ?? false)
+        ScribCommand(
+          category: 'Security', title: 'Lock Tab', icon: Icons.lock,
+          shortcut: 'Ctrl+L', action: () => _lockActiveTab(context),
+        ),
+      if (editor.hasLockableTabs)
+        ScribCommand(
+          category: 'Security', title: 'Lock All Encrypted Tabs', icon: Icons.lock,
+          action: () => _lockAllTabs(context),
+        ),
+      if (isEncrypted && !isLocked)
+        ScribCommand(
+          category: 'Security', title: 'Change Password...', icon: Icons.password,
+          action: () => _changePassword(context),
+        ),
+      for (final (minutes, label) in const [
+        (0, 'Auto-Lock: Off'),
+        (1, 'Auto-Lock: After 1 Minute'),
+        (5, 'Auto-Lock: After 5 Minutes'),
+        (15, 'Auto-Lock: After 15 Minutes'),
+      ])
+        ScribCommand(
+          category: 'Security',
+          title: label + (settings.autoLockMinutes == minutes ? '  (current)' : ''),
+          icon: Icons.lock_clock,
+          action: () => settings.setAutoLockMinutes(minutes),
+        ),
+      ScribCommand(
+        category: 'Help', title: 'Keyboard Shortcuts', icon: Icons.keyboard_outlined,
+        shortcut: 'F1', action: () => showShortcutsDialog(context),
+      ),
+      ScribCommand(
+        category: 'Help', title: 'About Scrib', icon: Icons.info_outline,
+        action: () => showScribAbout(context),
+      ),
+    ];
   }
 
   void _showSnack(BuildContext context, String message) {
