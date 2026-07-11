@@ -4,6 +4,48 @@ All notable changes to Scrib Desktop are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.0] - 2026-07-11 - A formatting toolbar you can actually reach, checklists, and links
+
+A rich-text usability release, triggered by a real bug report: the bullet
+list button existed but was invisible. **The `.scrb` file format and settings
+schema are unchanged**; existing files open untouched.
+
+### Fixed
+- **The formatting toolbar no longer clips buttons off-screen.** It was a
+  fixed-height row about 850 px wide, so at the default 900 px window (or
+  anything narrower) everything from the list buttons rightward was silently
+  cut off. The toolbar now wraps onto additional rows, so every control is
+  visible and clickable at any window width. Covered by a regression test
+  that renders the toolbar at 700 px and asserts nothing overflows.
+- **List buttons now switch between list types.** Clicking Bullets while on
+  a numbered list previously removed the list; it now converts it, matching
+  Word and Google Docs.
+- **RTF export of checklist lines** no longer produces unbalanced groups
+  (a latent bug that mattered once checklists arrived).
+
+### Added
+- **Checklist** (`Ctrl+Shift+9`): to-do lines with clickable checkboxes.
+  Pressing Enter continues the checklist; Enter on an empty item ends it.
+  Stored in the note, so in a `.scrb` it is encrypted like everything else.
+  RTF export writes `[ ]` / `[x]` markers.
+- **Links** (`Ctrl+K`): insert, edit, or remove a hyperlink. The cursor only
+  needs to be inside a link to edit the whole link. `Ctrl+Click` opens it in
+  the browser. Only `http`, `https`, and `mailto` are accepted: a note can
+  never carry a `javascript:`, `file:`, or other active-scheme link, and the
+  same allowlist is enforced again at launch time.
+- **Subscript and superscript** buttons, mutually exclusive, exported to RTF
+  as `\sub` / `\super`.
+- **Standard list shortcuts**: `Ctrl+Shift+8` bullets, `Ctrl+Shift+7`
+  numbered, `Ctrl+Shift+9` checklist (the Word / Google Docs bindings).
+- Insert menu and command palette entries for Link and the list types.
+- Clear Formatting now also clears sub/superscript and links.
+
+### Notes
+- Links, checklists and sub/superscript are rich-text features; `.rtf` export
+  keeps sub/superscript and renders checklists as text markers, while link
+  targets are dropped (the display text is kept).
+- Test suite grown from 311 to 332.
+
 ## [1.7.0] - 2026-07-03 - Locked tabs, auto-lock, session restore, and a command palette
 
 A security and workflow pass built around one idea: an encrypted note should

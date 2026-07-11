@@ -1,13 +1,15 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_quill/flutter_quill.dart' show ChangeSource, QuillController;
+import 'package:flutter_quill/flutter_quill.dart'
+    show Attribute, ChangeSource, QuillController;
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import '../dialogs/about_dialog.dart';
 import '../dialogs/calculator_dialog.dart';
 import '../dialogs/confirm_dialog.dart';
+import '../dialogs/link_dialog.dart';
 import '../dialogs/password_dialog.dart';
 import '../dialogs/shortcuts_dialog.dart';
 import '../providers/editor_provider.dart';
@@ -259,7 +261,32 @@ class _MainScreenState extends State<MainScreen> {
           () => _openCommandPalette(context),
       const SingleActivator(LogicalKeyboardKey.keyL, control: true): () =>
           _toggleLockActiveTab(context),
+      // Rich-text formatting (Word / Google Docs standard bindings).
+      const SingleActivator(LogicalKeyboardKey.digit8, control: true, shift: true):
+          () => _toggleListShortcut(Attribute.ul),
+      const SingleActivator(LogicalKeyboardKey.digit7, control: true, shift: true):
+          () => _toggleListShortcut(Attribute.ol),
+      const SingleActivator(LogicalKeyboardKey.digit9, control: true, shift: true):
+          () => _toggleListShortcut(Attribute.unchecked),
+      const SingleActivator(LogicalKeyboardKey.keyK, control: true): () =>
+          _insertLink(context),
     };
+  }
+
+  /// Ctrl+Shift+7/8/9 — toggle a list type on the active rich-text editor.
+  void _toggleListShortcut(Attribute target) {
+    final quillCtrl = _activeQuill.value;
+    if (quillCtrl == null) return; // plain-text tab: no-op
+    toggleList(quillCtrl, target);
+  }
+
+  Future<void> _insertLink(BuildContext context) async {
+    final quillCtrl = _activeQuill.value;
+    if (quillCtrl == null) {
+      _showSnack(context, 'Switch to Rich Text (Ctrl+M) to insert links.');
+      return;
+    }
+    await showLinkEditor(context, quillCtrl);
   }
 
   Widget _buildMenuBar(BuildContext context) {
@@ -456,6 +483,11 @@ class _MainScreenState extends State<MainScreen> {
             MenuItemButton(
               onPressed: () => _insertTable(context),
               child: const Text('Table...'),
+            ),
+            MenuItemButton(
+              shortcut: const SingleActivator(LogicalKeyboardKey.keyK, control: true),
+              onPressed: () => _insertLink(context),
+              child: const Text('Link...'),
             ),
             const Divider(),
             MenuItemButton(
@@ -1235,8 +1267,29 @@ class _MainScreenState extends State<MainScreen> {
           action: () => _insertTable(context),
         ),
         ScribCommand(
+          category: 'Insert', title: 'Link...', icon: Icons.link,
+          shortcut: 'Ctrl+K', action: () => _insertLink(context),
+        ),
+        ScribCommand(
           category: 'Insert', title: 'Calculator...', icon: Icons.calculate_outlined,
           action: () => _openCalculator(context),
+        ),
+      ],
+      if (!isLocked && isRich) ...[
+        ScribCommand(
+          category: 'Format', title: 'Bullet List', icon: Icons.format_list_bulleted,
+          shortcut: 'Ctrl+Shift+8',
+          action: () => _toggleListShortcut(Attribute.ul),
+        ),
+        ScribCommand(
+          category: 'Format', title: 'Numbered List', icon: Icons.format_list_numbered,
+          shortcut: 'Ctrl+Shift+7',
+          action: () => _toggleListShortcut(Attribute.ol),
+        ),
+        ScribCommand(
+          category: 'Format', title: 'Checklist', icon: Icons.checklist,
+          shortcut: 'Ctrl+Shift+9',
+          action: () => _toggleListShortcut(Attribute.unchecked),
         ),
       ],
       ScribCommand(

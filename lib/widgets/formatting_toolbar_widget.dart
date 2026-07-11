@@ -2,13 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 import '../constants.dart';
 import '../dialogs/calculator_dialog.dart';
+import '../dialogs/link_dialog.dart';
+import '../services/format_utils.dart';
 import 'image_embed_builder.dart';
 import 'table_embed_builder.dart';
 
 /// Full-featured formatting toolbar for rich text mode.
 /// Provides WordPad-style formatting options: headings, text styling,
-/// text color, neon highlights, alignment, lists, indentation,
-/// block quotes, and clear formatting.
+/// text color, neon highlights, alignment, lists (bullet, numbered,
+/// checklist), links, sub/superscript, indentation, block quotes, and
+/// clear formatting.
+///
+/// The toolbar WRAPS to additional rows when the window is narrow. It was
+/// previously a fixed-height Row, which silently clipped every control past
+/// the window's right edge (at the default 900 px window that cut off the
+/// list buttons and everything after them).
 class ScribFormattingToolbar extends StatelessWidget {
   final QuillController controller;
 
@@ -22,8 +30,8 @@ class ScribFormattingToolbar extends StatelessWidget {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Container(
-      height: 38,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         color: isDark ? const Color(0xFF181818) : const Color(0xFFF5F5F5),
         border: Border(
@@ -51,9 +59,18 @@ class ScribFormattingToolbar extends StatelessWidget {
           final alignValue = style.attributes[Attribute.align.key]?.value as String?;
 
           // Lists
-          final listValue = style.attributes[Attribute.list.key]?.value;
+          final listValue = style.attributes[Attribute.list.key]?.value as String?;
           final isBulletList = listValue == 'bullet';
           final isNumberedList = listValue == 'ordered';
+          final isChecklist = listValue == 'checked' || listValue == 'unchecked';
+
+          // Sub / superscript
+          final scriptValue = style.attributes[Attribute.script.key]?.value;
+          final isSubscript = scriptValue == 'sub';
+          final isSuperscript = scriptValue == 'super';
+
+          // Link
+          final hasLink = style.containsKey(Attribute.link.key);
 
           // Block quote
           final isBlockQuote = style.containsKey(Attribute.blockQuote.key);
@@ -75,7 +92,9 @@ class ScribFormattingToolbar extends StatelessWidget {
               ? sizeRaw.toInt()
               : (sizeRaw is String ? int.tryParse(sizeRaw) : null);
 
-          return Row(
+          return Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            runSpacing: 2,
             children: [
               // --- Font family dropdown ---
               _FontFamilyDropdown(
@@ -143,6 +162,20 @@ class ScribFormattingToolbar extends StatelessWidget {
                 tooltip: 'Strikethrough',
                 isActive: isStrike,
                 onPressed: () => _toggleInline(Attribute.strikeThrough),
+                isDark: isDark,
+              ),
+              _FormatButton(
+                icon: Icons.subscript,
+                tooltip: 'Subscript',
+                isActive: isSubscript,
+                onPressed: () => _toggleScript(Attribute.subscript, isSubscript),
+                isDark: isDark,
+              ),
+              _FormatButton(
+                icon: Icons.superscript,
+                tooltip: 'Superscript',
+                isActive: isSuperscript,
+                onPressed: () => _toggleScript(Attribute.superscript, isSuperscript),
                 isDark: isDark,
               ),
 
@@ -219,16 +252,23 @@ class ScribFormattingToolbar extends StatelessWidget {
               // --- Lists ---
               _FormatButton(
                 icon: Icons.format_list_bulleted,
-                tooltip: 'Bullet List',
+                tooltip: 'Bullet List (Ctrl+Shift+8)',
                 isActive: isBulletList,
-                onPressed: () => _toggleBlock(Attribute.ul, style),
+                onPressed: () => toggleList(controller, Attribute.ul),
                 isDark: isDark,
               ),
               _FormatButton(
                 icon: Icons.format_list_numbered,
-                tooltip: 'Numbered List',
+                tooltip: 'Numbered List (Ctrl+Shift+7)',
                 isActive: isNumberedList,
-                onPressed: () => _toggleBlock(Attribute.ol, style),
+                onPressed: () => toggleList(controller, Attribute.ol),
+                isDark: isDark,
+              ),
+              _FormatButton(
+                icon: Icons.checklist,
+                tooltip: 'Checklist (Ctrl+Shift+9)',
+                isActive: isChecklist,
+                onPressed: () => toggleList(controller, Attribute.unchecked),
                 isDark: isDark,
               ),
 
@@ -267,6 +307,15 @@ class ScribFormattingToolbar extends StatelessWidget {
 
               _divider(isDark),
 
+              // --- Link ---
+              _FormatButton(
+                icon: Icons.link,
+                tooltip: hasLink ? 'Edit Link (Ctrl+K)' : 'Insert Link (Ctrl+K)',
+                isActive: hasLink,
+                onPressed: () => showLinkEditor(context, controller),
+                isDark: isDark,
+              ),
+
               // --- Clear formatting ---
               _FormatButton(
                 icon: Icons.format_clear,
@@ -304,18 +353,6 @@ class ScribFormattingToolbar extends StatelessWidget {
                 onPressed: () => _onCalculator(context),
                 isDark: isDark,
               ),
-
-              const Spacer(),
-
-              Text(
-                'Rich Text',
-                style: TextStyle(
-                  fontSize: 11,
-                  color: isDark ? const Color(0xFF606060) : const Color(0xFFAAAAAA),
-                  fontStyle: FontStyle.italic,
-                ),
-              ),
-              const SizedBox(width: 4),
             ],
           );
         },
@@ -360,6 +397,16 @@ class ScribFormattingToolbar extends StatelessWidget {
     }
   }
 
+  /// Sub / superscript are mutually exclusive values of the same attribute:
+  /// activating one replaces the other, clicking the active one turns it off.
+  void _toggleScript(Attribute attr, bool isActive) {
+    if (isActive) {
+      controller.formatSelection(Attribute.clone(Attribute.script, null));
+    } else {
+      controller.formatSelection(attr);
+    }
+  }
+
   void _toggleBlock(Attribute attr, Style style) {
     if (style.containsKey(attr.key)) {
       controller.formatSelection(Attribute.clone(attr, null));
@@ -395,6 +442,8 @@ class ScribFormattingToolbar extends StatelessWidget {
     controller.formatSelection(Attribute.clone(Attribute.italic, null));
     controller.formatSelection(Attribute.clone(Attribute.underline, null));
     controller.formatSelection(Attribute.clone(Attribute.strikeThrough, null));
+    controller.formatSelection(Attribute.clone(Attribute.script, null));
+    controller.formatSelection(Attribute.clone(Attribute.link, null));
     controller.formatSelection(const ColorAttribute(null));
     controller.formatSelection(const BackgroundAttribute(null));
     // Font & size
@@ -406,14 +455,33 @@ class ScribFormattingToolbar extends StatelessWidget {
   }
 
   Widget _divider(bool isDark) {
+    // Explicit height: inside a Wrap there is no cross-axis stretch, so an
+    // unconstrained Container would collapse to zero and disappear.
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 7),
+      padding: const EdgeInsets.symmetric(horizontal: 3),
       child: Container(
         width: 1,
+        height: 20,
         color: isDark ? const Color(0xFF2A2A2A) : const Color(0xFFE0E0E0),
       ),
     );
   }
+}
+
+/// Toggle the given list type on the controller's current selection, with
+/// standard switch-vs-remove semantics (see [resolveListToggle]). Shared by
+/// the toolbar buttons, keyboard shortcuts, and the command palette. For the
+/// checklist, any checked/unchecked line counts as "already a checklist".
+void toggleList(QuillController controller, Attribute target) {
+  final current = controller
+      .getSelectionStyle()
+      .attributes[Attribute.list.key]
+      ?.value as String?;
+  // A checked line toggled against "unchecked" is still the same checklist —
+  // normalize so clicking the checklist button on a checked line removes it.
+  final normalized =
+      (current == 'checked' && target.value == 'unchecked') ? 'unchecked' : current;
+  controller.formatSelection(resolveListToggle(normalized, target));
 }
 
 // ---------------------------------------------------------------------------

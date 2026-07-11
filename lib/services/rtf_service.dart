@@ -405,6 +405,8 @@ class RtfService {
     if (attrs.containsKey('italic') && attrs['italic'] == true) buf.write('\\i');
     if (attrs.containsKey('underline') && attrs['underline'] == true) buf.write('\\ul');
     if (attrs.containsKey('strike') && attrs['strike'] == true) buf.write('\\strike');
+    if (attrs['script'] == 'sub') buf.write('\\sub');
+    if (attrs['script'] == 'super') buf.write('\\super');
     final font = attrs['font'];
     if (font is String) {
       final fontIndex = fontList.indexOf(font);
@@ -440,6 +442,12 @@ class RtfService {
       final listType = attrs['list'];
       if (listType == 'bullet') return '{\\li720\\fi-360 \\\'95\\tab ';
       if (listType == 'ordered') return '{\\li720\\fi-360 ';
+      // Checklists export as [x] / [ ] markers. These branches must return a
+      // '{' like the others: _blockFormattingClose emits '}' for ANY list
+      // line, so a missing open brace here would corrupt the RTF.
+      if (listType == 'checked') return '{\\li720\\fi-360 [x]\\tab ';
+      if (listType == 'unchecked') return '{\\li720\\fi-360 [ ]\\tab ';
+      return '{';
     }
     return '';
   }

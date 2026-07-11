@@ -2,7 +2,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../providers/editor_provider.dart';
+import '../services/format_utils.dart';
 import '../services/settings_service.dart';
 import '../constants.dart';
 import 'image_embed_builder.dart';
@@ -292,6 +294,16 @@ class ScribEditorState extends State<ScribEditor> {
       config: QuillEditorConfig(
         placeholder: 'Start typing...',
         padding: const EdgeInsets.all(16),
+        // Ctrl+click opens a link. Scheme allowlist (http/https/mailto) —
+        // a note must never be able to launch anything else.
+        onLaunchUrl: (url) async {
+          if (!isSafeLaunchUrl(url)) return;
+          final uri = Uri.tryParse(url);
+          if (uri == null) return;
+          if (await canLaunchUrl(uri)) {
+            await launchUrl(uri, mode: LaunchMode.externalApplication);
+          }
+        },
         embedBuilders: const [
           ScribImageEmbedBuilder(),
           ScribTableEmbedBuilder(),

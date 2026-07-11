@@ -47,6 +47,14 @@ const Map<String, List<List<String>>> _shortcutGroups = {
     ['Command palette', 'Ctrl+Shift+P'],
     ['Keyboard shortcuts', 'F1'],
   ],
+  'Rich text formatting': [
+    ['Bold / Italic / Underline', 'Ctrl+B / Ctrl+I / Ctrl+U'],
+    ['Bullet list', 'Ctrl+Shift+8'],
+    ['Numbered list', 'Ctrl+Shift+7'],
+    ['Checklist', 'Ctrl+Shift+9'],
+    ['Insert / edit link', 'Ctrl+K'],
+    ['Open link', 'Ctrl+Click'],
+  ],
 };
 
 class _ShortcutsDialog extends StatelessWidget {

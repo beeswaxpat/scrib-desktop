@@ -43,11 +43,13 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 - Auto-save on a configurable timer
 
 **Rich Text**
-- Bold, italic, underline, strikethrough
+- Bold, italic, underline, strikethrough, subscript, superscript
 - Font family and size picker (14 system fonts, sizes 8–72)
 - Text color palette (10 colors) and neon highlight colors (8 colors)
-- Headings (H1–H3), bullet lists, numbered lists, block quotes
+- Headings (H1–H3), bullet lists (`Ctrl+Shift+8`), numbered lists (`Ctrl+Shift+7`), checklists with clickable checkboxes (`Ctrl+Shift+9`), block quotes
+- Links (`Ctrl+K` to insert or edit, `Ctrl+Click` to open; only http, https, and mailto schemes are allowed)
 - Text alignment (left, center, right, justify) and indent/outdent
+- The toolbar wraps to extra rows at narrow window widths, so every button stays reachable
 - Insert images (Insert menu or the rich-text toolbar): PNG, JPEG, GIF, WebP, BMP, SVG, TIFF, TGA, ICO, PSD and more. Images are embedded in the note itself, so inside a `.scrb` they are encrypted along with the text. Large images are downscaled on insert.
 - Images sit inline with text: type to the left or right, press Enter for above or below, align them, and resize or remove them on hover. The size is stored on the image and survives save and reopen.
 - Insert tables: a grid picker chooses the size (up to 8 columns by 10 rows), cells are edited in place with a header row, and a hover toolbar adds or removes rows and columns. Tables are stored in the note, so inside a `.scrb` they are encrypted with the text.
@@ -108,6 +110,11 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 | `Ctrl+Z` | Undo |
 | `Ctrl+Shift+Z` | Redo |
 | `Ctrl+Y` | Redo (alternate) |
+| `Ctrl+B` / `Ctrl+I` / `Ctrl+U` | Bold / Italic / Underline (rich text) |
+| `Ctrl+Shift+8` | Bullet list (rich text) |
+| `Ctrl+Shift+7` | Numbered list (rich text) |
+| `Ctrl+Shift+9` | Checklist (rich text) |
+| `Ctrl+K` | Insert / edit link (rich text) |
 | `Ctrl+=` | Increase text size (plain text) |
 | `Ctrl+-` | Decrease text size (plain text) |
 | `Ctrl+0` | Reset text size (plain text) |
@@ -238,7 +245,7 @@ Encrypted tabs display a gold lock icon. A locked tab reads "Locked (.scrb)" and
 |---|---|
 | **File** | New, Open, Recent Files, Save, Save As, Set Save Location, Close Tab |
 | **Edit** | Undo, Redo, Cut, Copy, Paste, Select All, Find, Find & Replace, Search All Tabs |
-| **Insert** | Image (rich text mode), Table (rich text mode), Calculator |
+| **Insert** | Image (rich text mode), Table (rich text mode), Link (rich text mode), Calculator |
 | **View** | Increase/Decrease/Default Text Size, Line Numbers toggle, Auto-Save toggle, Reopen Tabs on Launch toggle, Theme (System/Light/Dark) |
 | **Security** | Encrypt File / Decrypt File, Change Password, Lock Tab / Unlock Tab, Lock All Encrypted Tabs, Auto-Lock Encrypted Tabs (Off / 1 / 5 / 15 min) |
 | **Help** | Command Palette, Keyboard Shortcuts, About Scrib |
