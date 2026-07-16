@@ -40,13 +40,13 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 - Hover a tab to see its full file path
 - Line numbers toggle (View menu), persistent window position and size
 - Drag and drop files onto the window to open them: `.txt`, `.md`, `.rtf`, encrypted `.scrb`, and every other supported format. Drop several at once and each opens in its own tab; encrypted files ask for their password, folders and unsupported types are skipped with a notice
-- Auto-save on a configurable timer
+- Auto-save every 30 seconds (toggle in the View menu)
 
 **Rich Text**
 - Bold, italic, underline, strikethrough, subscript, superscript
-- Font family and size picker (14 system fonts, sizes 8–72)
+- Font family and size picker (14 system fonts, sizes 8-72)
 - Text color palette (10 colors) and neon highlight colors (8 colors)
-- Headings (H1–H3), bullet lists (`Ctrl+Shift+8`), numbered lists (`Ctrl+Shift+7`), checklists with clickable checkboxes (`Ctrl+Shift+9`), block quotes
+- Headings (H1-H3), bullet lists (`Ctrl+Shift+8`), numbered lists (`Ctrl+Shift+7`), checklists with clickable checkboxes (`Ctrl+Shift+9`), block quotes
 - Links (`Ctrl+K` to insert or edit, `Ctrl+Click` to open; only http, https, and mailto schemes are allowed)
 - Text alignment (left, center, right, justify) and indent/outdent
 - The toolbar wraps to extra rows at narrow window widths, so every button stays reachable
@@ -59,7 +59,7 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 
 **Search**
 - Find within current tab (`Ctrl+F`) with Match case and Whole word toggles
-- Selected text pre-fills the find bar; Enter finds next, `Shift+Enter` previous, `F3` / `Shift+F3` work from anywhere in the tab
+- Selected text pre-fills the find bar; Enter finds next, `Shift+Enter` previous, `F3` / `Shift+F3` step next / previous while the find bar has focus
 - Find & Replace (`Ctrl+H`): works in rich text too, replacing exact document positions so notes with images or tables are never corrupted
 - Search across all open tabs (`Ctrl+Shift+F`) with match counts, keyboard navigation, and click-to-jump; finds text inside tables
 - Go to line (`Ctrl+G`, plain text), with a live `Ln, Col` readout in the status bar
@@ -109,7 +109,7 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 | `Ctrl+1` .. `Ctrl+8` | Go to tab 1-8 |
 | `Ctrl+9` | Go to last tab |
 | `Ctrl+F` | Find (Match case / Whole word toggles in the bar) |
-| `F3` / `Shift+F3` | Find next / previous |
+| `F3` / `Shift+F3` | Find next / previous (find bar focused) |
 | `Ctrl+H` | Find & Replace |
 | `Ctrl+Shift+F` | Search all tabs |
 | `Ctrl+G` | Go to line (plain text) |
@@ -120,6 +120,8 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 | `Ctrl+Z` | Undo |
 | `Ctrl+Shift+Z` | Redo |
 | `Ctrl+Y` | Redo (alternate) |
+| `Ctrl+X` / `Ctrl+C` / `Ctrl+V` | Cut / Copy / Paste |
+| `Ctrl+A` | Select All |
 | `Ctrl+B` / `Ctrl+I` / `Ctrl+U` | Bold / Italic / Underline (rich text) |
 | `Ctrl+Shift+8` | Bullet list (rich text) |
 | `Ctrl+Shift+7` | Numbered list (rich text) |
@@ -128,7 +130,7 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 | `Ctrl+=` | Increase text size (plain text) |
 | `Ctrl+-` | Decrease text size (plain text) |
 | `Ctrl+0` | Reset text size (plain text) |
-| `Escape` | Close search bar |
+| `Escape` | Close find / search panel |
 | `F1` | Keyboard shortcuts reference |
 
 ---
@@ -136,7 +138,7 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 ## Building from Source
 
 **Requirements**
-- [Flutter](https://flutter.dev/) 3.7+ (tested on 3.38.6)
+- [Flutter](https://flutter.dev/) 3.38+ (CI builds and releases on 3.38.6)
 - Windows 10 or later
 - Visual Studio 2022 with the **Desktop development with C++** workload
 
@@ -196,7 +198,7 @@ lib/
     scrib_colors.dart               ThemeExtension color palette
 ```
 
-32 Dart files, ~12,000 lines of code, covered by 518 tests. See
+32 Dart files, ~13,000 lines of code, covered by 518 tests. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for the module map, the load-bearing
 invariants, and the save-path routing.
 
@@ -241,7 +243,7 @@ Scrib does **not** defend against:
   the password while a file is open. Passwords are held in memory as `String` for the
   lifetime of an open encrypted tab; Dart strings are immutable and can't be securely
   zeroed, so the password may linger in the heap until garbage collection.
-- Brute force against weak passwords. PBKDF2 with 100k iterations buys time but not
+- Brute force against weak passwords. PBKDF2 with 100,000 iterations buys time but not
   infinity. Use a long, high-entropy password.
 - File path / filename leakage: `recentFiles`, window position, and default save
   location are stored in a plaintext Hive box under `%APPDATA%`. Future versions
@@ -252,12 +254,13 @@ Scrib does **not** defend against:
 
 ## Status Bar
 
-The bottom bar shows: **Words** · **Characters** · **Lines** · **Ln, Col** (plain text) · **UTF-8** · **File type** · **Encryption status**
+The bottom bar shows: **Words** · **Characters** · **Lines** · **Ln, Col** (plain text) · **UTF-8** · **Editing mode** · **File type** · **Encryption status**
 
 Word and character counts include table cell text. The file-type segment shows
 the actual extension of the open file (`.md`, `.json`, ...), not just the
-editing mode. Encrypted tabs display a gold lock icon. A locked tab reads
-"Locked (.scrb)" and its tab-bar lock turns gold until it is unlocked.
+editing mode. Encrypted tabs display a gold lock icon (a darker amber on the
+light theme, for contrast). A locked tab reads "Locked (.scrb)" and its tab-bar
+lock switches to the same lock color until it is unlocked.
 
 ---
 
@@ -283,9 +286,11 @@ editing mode. Encrypted tabs display a gold lock icon. A locked tab reads
 | `image` | Decodes and downscales image formats on insert |
 | `provider` | State management |
 | `hive` | Local settings persistence |
+| `path_provider` | Locates the settings folder under `%APPDATA%` |
 | `file_picker` | Native open/save dialogs |
 | `window_manager` | Window title, size, position |
 | `desktop_drop` | Drag and drop file support |
+| `url_launcher` | Opens note links in the default browser |
 | `pointycastle` | AES-256-CBC, PBKDF2, HMAC-SHA256 |
 | `ffi` | Windows `MoveFileExW` for atomic rename |
 

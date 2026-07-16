@@ -86,9 +86,9 @@ format and settings schema are unchanged**; existing files open untouched.
 - **Go to line** (`Ctrl+G`, plain text) plus a live `Ln, Col` readout in the
   status bar.
 - **Find bar options**: Match case and Whole word toggles, `F3` /
-  `Shift+F3` for next/previous from anywhere in the tab, `Shift+Enter` for
-  previous match, selected text pre-fills the query, and Enter keeps focus in
-  the bar.
+  `Shift+F3` for next/previous while the find bar has focus, `Shift+Enter`
+  for previous match, selected text pre-fills the query, and Enter keeps
+  focus in the bar.
 - **Hyperlinks survive RTF round-trips** as HYPERLINK fields; link targets
   are restricted to http, https, and mailto on import, the same allowlist the
   editor enforces.

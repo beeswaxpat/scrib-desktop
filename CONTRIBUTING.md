@@ -39,7 +39,7 @@ ARCHITECTURE.md for why upgrades need extra verification.
 ## Built With
 
 Scrib Desktop was built by [Beeswax Pat](https://scrib.cfd/) with
-[Claude Code](https://claude.ai/claude-code).
+[Claude Code](https://claude.com/claude-code).
 
 If you're using Claude Code to contribute, that works here too. Just make sure
 the output meets the same quality bar as any hand-written code: clean, tested,

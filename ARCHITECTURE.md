@@ -41,7 +41,7 @@ lib/
                              tab identity; launch-time link gate
     search_bar_widget.dart   Per-tab find and replace
     global_search_widget.dart Search across all open tabs
-    tab_bar_widget.dart      Tab strip with rename, colors, drag scroll
+    tab_bar_widget.dart      Tab strip with rename, colors, scrollbar
     toolbar_widget.dart      File ops, mode toggle, fonts, theme
     formatting_toolbar_widget.dart Rich-text formatting buttons
     table_embed_builder.dart / image_embed_builder.dart Embed renderers
@@ -53,7 +53,9 @@ lib/
 ```
 
 Dependency direction: `widgets/screens -> providers -> services`. Services never
-import widgets or providers.
+import widgets. One deliberate exception on providers: `file_operations.dart`
+imports `EditorProvider`, because it drives the provider through the manual
+save flow; every other service is provider-free.
 
 ## Load-bearing invariants
 
