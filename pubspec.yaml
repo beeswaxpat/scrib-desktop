@@ -1,4 +1,4 @@
-name: scrib_desktop
+﻿name: scrib_desktop
 description: "The encrypted Notepad. No tracking. No cloud. Just notes."
 publish_to: 'none'
 
@@ -21,20 +21,20 @@ dependencies:
   path_provider: ^2.1.6
   file_picker: ^8.1.6
 
-  # FFI — used for Windows atomic file replace (MoveFileExW)
+  # FFI â€” used for Windows atomic file replace (MoveFileExW)
   ffi: ^2.1.0
 
-  # Encryption — AES-256-CBC, PBKDF2-SHA256, HMAC-SHA256
+  # Encryption â€” AES-256-CBC, PBKDF2-SHA256, HMAC-SHA256
   pointycastle: ^4.0.0
 
   # Rich text editor
   flutter_quill: ^11.0.0
 
   # Desktop-specific
-  window_manager: ^0.4.2
-  desktop_drop: ^0.4.4
+  window_manager: ^0.5.2
+  desktop_drop: ^0.7.1
 
-  # Image embeds — flutter_svg renders SVG; image decodes the long-tail raster
+  # Image embeds â€” flutter_svg renders SVG; image decodes the long-tail raster
   # formats (TIFF, TGA, ICO, PSD, etc.) and downscales large images on insert.
   flutter_svg: ^2.3.0
   image: ^4.8.0
