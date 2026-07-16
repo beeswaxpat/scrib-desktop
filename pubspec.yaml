@@ -25,7 +25,7 @@ dependencies:
   ffi: ^2.1.0
 
   # Encryption — AES-256-CBC, PBKDF2-SHA256, HMAC-SHA256
-  pointycastle: ^3.9.1
+  pointycastle: ^4.0.0
 
   # Rich text editor
   flutter_quill: ^11.0.0
