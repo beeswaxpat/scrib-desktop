@@ -39,7 +39,7 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 - Right-click a tab for Close, Close Others, Close to the Right, Close All, and Rename
 - Hover a tab to see its full file path
 - Line numbers toggle (View menu), persistent window position and size
-- Drag and drop files onto the window to open them
+- Drag and drop files onto the window to open them: `.txt`, `.md`, `.rtf`, encrypted `.scrb`, and every other supported format. Drop several at once and each opens in its own tab; encrypted files ask for their password, folders and unsupported types are skipped with a notice
 - Auto-save on a configurable timer
 
 **Rich Text**
@@ -84,7 +84,8 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 **File Format Support**
 - **Open:** `.txt`, `.scrb`, `.rtf`, `.md`, `.log`, `.csv`, `.json`, `.xml`, `.yaml`, `.yml`, `.ini`, `.cfg`
 - **Save:** `.txt`, `.scrb`, `.rtf`
-- RTF import/export preserves formatting when switching between editors
+- Every openable format can also be dragged onto the window from Explorer, including multi-file drops
+- RTF import/export preserves formatting when switching between editors: bold, italic, fonts, sizes, lists, checklists, headers, block quotes, links, and sub/superscript survive a save and reopen in Word or WordPad
 
 **Appearance**
 - Dark, Light, and System themes (Material 3)
