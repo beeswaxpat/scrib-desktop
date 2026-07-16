@@ -18,7 +18,7 @@ dependencies:
   provider: ^6.1.2
 
   # File system
-  path_provider: ^2.1.5
+  path_provider: ^2.1.6
   file_picker: ^8.1.6
 
   # FFI — used for Windows atomic file replace (MoveFileExW)
