@@ -38,11 +38,32 @@ void main() async {
     }
   }
 
-  // Best-effort recovery of any stranded .tmp/.bak files from a prior crash.
-  // Safe no-op on clean startup. Runs only against the user's save location
-  // so we never touch files outside the app's working directory.
+  // Best-effort recovery of any stranded Scrib-namespaced .scrib-tmp /
+  // .scrib-bak files from a prior crash. Safe no-op on clean startup. Beyond
+  // the default save location, sweep the directory of every session-restore
+  // and recent file: a crash mid-fallback-rename strands the user's content
+  // at <path>.scrib-bak wherever that file lives, not only in the save dir.
+  final recoverDirs = <String>{};
   if (settingsService.defaultSaveLocation.isNotEmpty) {
-    unawaited(AtomicWrite.recoverIfNeeded(settingsService.defaultSaveLocation));
+    recoverDirs.add(settingsService.defaultSaveLocation);
+  }
+  String? parentDir(String path) {
+    final sep = path.lastIndexOf(Platform.pathSeparator);
+    return sep > 0 ? path.substring(0, sep) : null;
+  }
+  for (final entry in settingsService.sessionTabs) {
+    final p = entry['path'];
+    if (p is String && p.isNotEmpty) {
+      final dir = parentDir(p);
+      if (dir != null) recoverDirs.add(dir);
+    }
+  }
+  for (final p in settingsService.recentFiles) {
+    final dir = parentDir(p);
+    if (dir != null) recoverDirs.add(dir);
+  }
+  for (final dir in recoverDirs) {
+    unawaited(AtomicWrite.recoverIfNeeded(dir));
   }
 
   final fileService = FileService();
@@ -190,8 +211,9 @@ class _ScribDesktopAppState extends State<ScribDesktopApp> with WindowListener {
               ScaffoldMessenger.of(c).showSnackBar(
                 const SnackBar(
                   content: Text(
-                    'Some tabs still need a filename or password. '
-                    'Save them, then quit.',
+                    'Some tabs could not be saved automatically '
+                    '(missing filename or password, or a pending format '
+                    'change). Save them with Ctrl+S, then quit.',
                   ),
                   behavior: SnackBarBehavior.floating,
                 ),

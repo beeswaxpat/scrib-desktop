@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/beeswaxpat/scrib-desktop/security/advisories/new
+    about: Report encryption, file-handling, or data-integrity issues privately. Do not open a public issue.
+  - name: Scrib website
+    url: https://scrib.cfd/
+    about: Downloads, blog, and contact details.

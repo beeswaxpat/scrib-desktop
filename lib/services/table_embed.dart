@@ -85,9 +85,11 @@ class ScribTable {
       final rawCells = (map['cells'] as List<dynamic>?) ?? const [];
       final cells = <List<String>>[];
       for (var r = 0; r < rows; r++) {
-        final rawRow = r < rawCells.length
-            ? (rawCells[r] as List<dynamic>)
-            : const <dynamic>[];
+        // A row that is not a list (corrupt or crafted) pads to blanks, the
+        // same as a missing row, so one bad row cannot discard the readable
+        // content of every other row.
+        final dynamic rawRowDyn = r < rawCells.length ? rawCells[r] : null;
+        final rawRow = rawRowDyn is List ? rawRowDyn : const <dynamic>[];
         final row = <String>[];
         for (var c = 0; c < cols; c++) {
           row.add(c < rawRow.length ? (rawRow[c] ?? '').toString() : '');
@@ -106,6 +108,33 @@ class ScribTable {
       return null;
     }
   }
+
+  /// Parses a table from the raw payload of a Delta custom-embed op, i.e. the
+  /// value of the 'custom' key in `{'insert': {'custom': '{"scrib-table": ...}'}}`
+  /// (which is also what a live custom [Embed] node carries in `value.data`).
+  /// Returns null for anything that is not a valid Scrib table.
+  static ScribTable? fromCustomEmbedData(dynamic customData) {
+    if (customData == null) return null;
+    try {
+      final decoded =
+          customData is String ? jsonDecode(customData) : customData;
+      if (decoded is! Map) return null;
+      final inner = decoded[kType];
+      if (inner == null) return null;
+      return fromData(inner);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// All non-empty cell text joined with newlines, for search and word/char
+  /// counts. Newline separators guarantee a query can never falsely match
+  /// across two adjacent cells.
+  String get searchableCellText => [
+        for (final row in cells)
+          for (final cell in row)
+            if (cell.isNotEmpty) cell,
+      ].join('\n');
 
   /// The Quill embed for inserting/replacing this table in a document.
   BlockEmbed toEmbed() =>

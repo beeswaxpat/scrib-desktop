@@ -13,12 +13,18 @@ Attribute resolveListToggle(String? currentValue, Attribute target) {
   return target;
 }
 
+/// Characters that must never appear INSIDE a link after trimming: every
+/// whitespace character (space, tab, newline, unicode spaces) plus ASCII
+/// control characters. A real URL percent-encodes them; raw occurrences are
+/// either a typo or an attempt to smuggle a scheme past the allowlist.
+final RegExp _linkForbiddenChars = RegExp(r'[\s\x00-\x1f\x7f]');
+
 /// Normalize user-entered link text into a launchable URL, or return null if
 /// it cannot be made safe. Only http, https, and mailto are allowed — a note
 /// must never carry a javascript:, file:, or other active-scheme link.
 String? normalizeLinkUrl(String raw) {
   final t = raw.trim();
-  if (t.isEmpty || t.contains(' ')) return null;
+  if (t.isEmpty || t.contains(_linkForbiddenChars)) return null;
 
   final uri = Uri.tryParse(t);
   final scheme = uri?.scheme.toLowerCase() ?? '';
@@ -47,7 +53,13 @@ String? normalizeLinkUrl(String raw) {
 }
 
 /// Whether a URL already stored in a note is safe to open in the browser.
+/// This is the LAUNCH-TIME gate: a crafted .scrb or .rtf can carry any link
+/// attribute without ever passing through the link dialog, so this check must
+/// stand alone. Scheme allowlist (http/https/mailto, case-insensitive) plus
+/// the same raw whitespace/control-character rejection the dialog applies.
 bool isSafeLaunchUrl(String url) {
-  final scheme = Uri.tryParse(url.trim())?.scheme.toLowerCase() ?? '';
+  final t = url.trim();
+  if (t.isEmpty || t.contains(_linkForbiddenChars)) return false;
+  final scheme = Uri.tryParse(t)?.scheme.toLowerCase() ?? '';
   return scheme == 'http' || scheme == 'https' || scheme == 'mailto';
 }

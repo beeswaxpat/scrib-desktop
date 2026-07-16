@@ -32,16 +32,20 @@ const Map<String, List<List<String>>> _shortcutGroups = {
     ['Close find / search', 'Esc'],
   ],
   'View': [
-    ['Increase text size', 'Ctrl+='],
-    ['Decrease text size', 'Ctrl+-'],
-    ['Default text size', 'Ctrl+0'],
+    ['Increase text size (plain text)', 'Ctrl+='],
+    ['Decrease text size (plain text)', 'Ctrl+-'],
+    ['Default text size (plain text)', 'Ctrl+0'],
   ],
   'Tabs': [
     ['Next tab', 'Ctrl+Tab'],
     ['Previous tab', 'Ctrl+Shift+Tab'],
+    ['Go to tab 1-8', 'Ctrl+1 .. Ctrl+8'],
+    ['Go to last tab', 'Ctrl+9'],
+    ['Reopen closed tab', 'Ctrl+Shift+T'],
   ],
   'Editor': [
     ['Toggle Plain / Rich text', 'Ctrl+M'],
+    ['Go to line (plain text)', 'Ctrl+G'],
     ['Encrypt / Decrypt', 'Ctrl+E'],
     ['Lock / Unlock tab', 'Ctrl+L'],
     ['Command palette', 'Ctrl+Shift+P'],

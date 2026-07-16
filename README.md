@@ -13,7 +13,7 @@
 [![Release](https://img.shields.io/github/v/release/beeswaxpat/scrib-desktop?color=green)](https://github.com/beeswaxpat/scrib-desktop/releases)
 [![Built with Flutter](https://img.shields.io/badge/Built_with-Flutter-02569B?logo=flutter&logoColor=white)](https://flutter.dev/)
 
-The encrypted desktop editor. Plain text, rich text, and `.scrb` — fully offline, zero tracking.
+The encrypted desktop editor. Plain text, rich text, and `.scrb`: fully offline, zero tracking.
 
 Built by [Beeswax Pat](https://scrib.cfd/), with [Claude](https://claude.ai) · Licensed under the [GNU GPL v3](LICENSE)
 
@@ -21,9 +21,9 @@ Built by [Beeswax Pat](https://scrib.cfd/), with [Claude](https://claude.ai) · 
 
 ---
 
-![Scrib Desktop — multi-tab, rich text, encrypted. Three tabs open with encryption active.](screenshot.png)
+![Scrib Desktop: multi-tab, rich text, encrypted. Three tabs open with encryption active.](screenshot.png)
 
-![Scrib Desktop — rich text mode with dark theme, showing formatted notes in the editor.](screenshot-richtext.png)
+![Scrib Desktop: rich text mode with dark theme, showing formatted notes in the editor.](screenshot-richtext.png)
 
 ---
 
@@ -58,9 +58,11 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 - Built-in calculator (Insert menu or the rich-text toolbar): evaluates as you type with operator precedence, parentheses, powers, modulo and decimals, keeps a short history, and can insert the result at the cursor in either editing mode. It uses a small built-in parser, not `eval`, so a note cannot run code through it.
 
 **Search**
-- Find within current tab (`Ctrl+F`)
-- Find & Replace (`Ctrl+H`)
-- Search across all open tabs (`Ctrl+Shift+F`) with match counts and click-to-jump
+- Find within current tab (`Ctrl+F`) with Match case and Whole word toggles
+- Selected text pre-fills the find bar; Enter finds next, `Shift+Enter` previous, `F3` / `Shift+F3` work from anywhere in the tab
+- Find & Replace (`Ctrl+H`): works in rich text too, replacing exact document positions so notes with images or tables are never corrupted
+- Search across all open tabs (`Ctrl+Shift+F`) with match counts, keyboard navigation, and click-to-jump; finds text inside tables
+- Go to line (`Ctrl+G`, plain text), with a live `Ln, Col` readout in the status bar
 
 **Encryption**
 - Toggle encryption on any tab with `Ctrl+E`
@@ -76,6 +78,8 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 **Workspace**
 - **Session restore**: reopen the tabs you had open last time, at launch. Encrypted files come back locked, so launch never asks for a password and never decrypts anything unasked. Toggle in the View menu; turning it off also deletes the stored session record.
 - **Command palette (`Ctrl+Shift+P`)**: fuzzy-search every command in the app and run it from the keyboard
+- **Tab jumps**: `Ctrl+1` through `Ctrl+8` go straight to a tab, `Ctrl+9` to the last tab
+- **Reopen closed tab** (`Ctrl+Shift+T`), and the active tab always scrolls into view in the tab strip
 
 **File Format Support**
 - **Open:** `.txt`, `.scrb`, `.rtf`, `.md`, `.log`, `.csv`, `.json`, `.xml`, `.yaml`, `.yml`, `.ini`, `.cfg`
@@ -98,11 +102,16 @@ Scrib Desktop is a tabbed text editor for Windows that encrypts your files with 
 | `Ctrl+S` | Save |
 | `Ctrl+Shift+S` | Save As |
 | `Ctrl+W` | Close tab |
+| `Ctrl+Shift+T` | Reopen closed tab |
 | `Ctrl+Tab` | Next tab |
 | `Ctrl+Shift+Tab` | Previous tab |
-| `Ctrl+F` | Find |
+| `Ctrl+1` .. `Ctrl+8` | Go to tab 1-8 |
+| `Ctrl+9` | Go to last tab |
+| `Ctrl+F` | Find (Match case / Whole word toggles in the bar) |
+| `F3` / `Shift+F3` | Find next / previous |
 | `Ctrl+H` | Find & Replace |
 | `Ctrl+Shift+F` | Search all tabs |
+| `Ctrl+G` | Go to line (plain text) |
 | `Ctrl+E` | Toggle encryption |
 | `Ctrl+L` | Lock / unlock tab |
 | `Ctrl+Shift+P` | Command palette |
@@ -161,12 +170,15 @@ lib/
     image_embed_service.dart        Image pick / decode / downscale to data URI
     table_embed.dart                Table model + JSON codec (custom embed)
     calc_evaluator.dart             Calculator expression parser (no eval)
+    format_utils.dart               Link allowlist + list-toggle helpers
+    fuzzy_matcher.dart              Command palette matching
   dialogs/
     password_dialog.dart            Password entry / set-password dialogs (strength meter)
     about_dialog.dart               About Scrib
     confirm_dialog.dart             Unsaved-changes / confirm / font-size dialogs
     shortcuts_dialog.dart           Keyboard shortcuts reference (F1)
     calculator_dialog.dart          Built-in calculator
+    link_dialog.dart                Insert / edit link (scheme allowlist)
   widgets/
     editor_widget.dart              Plain text + rich text editor
     image_embed_builder.dart        Renders inline, resizable image embeds (raster + SVG)
@@ -176,13 +188,16 @@ lib/
     tab_bar_widget.dart             Tab bar with rename, color, close, right-click menu
     search_bar_widget.dart          Per-tab Find & Replace
     global_search_widget.dart       Cross-tab search panel
-    status_bar_widget.dart          Word / char / line count, status
+    command_palette.dart            Ctrl+Shift+P action palette
+    status_bar_widget.dart          Word / char / line count, Ln/Col, status
   theme/
     desktop_theme.dart              Dark and light Material 3 themes
     scrib_colors.dart               ThemeExtension color palette
 ```
 
-24 Dart files, ~7,400 lines of code, covered by 230+ tests.
+32 Dart files, ~12,000 lines of code, covered by 518 tests. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for the module map, the load-bearing
+invariants, and the save-path routing.
 
 ---
 
@@ -216,11 +231,14 @@ Scrib defends against:
 - Someone with read access to your `.scrb` files but not your password
 - File tampering (HMAC covers the version byte, IV, salt, and ciphertext)
 - Disk-level corruption during a save (atomic rename protects existing files)
+- Crafted `.scrb` headers: the per-file PBKDF2 iteration count is capped at
+  2,000,000 on read, so a hostile header cannot stall the app with an
+  arbitrarily large work factor
 
 Scrib does **not** defend against:
 - A compromised machine: a key-logger, RAM dump, or malicious Flutter build can recover
   the password while a file is open. Passwords are held in memory as `String` for the
-  lifetime of an open encrypted tab — Dart strings are immutable and can't be securely
+  lifetime of an open encrypted tab; Dart strings are immutable and can't be securely
   zeroed, so the password may linger in the heap until garbage collection.
 - Brute force against weak passwords. PBKDF2 with 100k iterations buys time but not
   infinity. Use a long, high-entropy password.
@@ -233,9 +251,12 @@ Scrib does **not** defend against:
 
 ## Status Bar
 
-The bottom bar shows: **Words** · **Characters** · **Lines** · **UTF-8** · **Plain/Rich Text** · **Encryption status**
+The bottom bar shows: **Words** · **Characters** · **Lines** · **Ln, Col** (plain text) · **UTF-8** · **File type** · **Encryption status**
 
-Encrypted tabs display a gold lock icon. A locked tab reads "Locked (.scrb)" and its tab-bar lock turns gold until it is unlocked.
+Word and character counts include table cell text. The file-type segment shows
+the actual extension of the open file (`.md`, `.json`, ...), not just the
+editing mode. Encrypted tabs display a gold lock icon. A locked tab reads
+"Locked (.scrb)" and its tab-bar lock turns gold until it is unlocked.
 
 ---
 
@@ -277,7 +298,7 @@ PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-GNU General Public License v3.0 — see [LICENSE](LICENSE).
+GNU General Public License v3.0, see [LICENSE](LICENSE).
 
 You are free to use, modify, and distribute this software under the terms of the GPL. If you distribute modified versions, they must also be open source under the GPL.
 

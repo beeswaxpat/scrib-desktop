@@ -13,6 +13,7 @@ import '../dialogs/link_dialog.dart';
 import '../dialogs/password_dialog.dart';
 import '../dialogs/shortcuts_dialog.dart';
 import '../providers/editor_provider.dart';
+import '../services/atomic_write.dart' show canonicalPath;
 import '../services/file_operations.dart';
 import '../services/file_service.dart';
 import '../services/rtf_service.dart';
@@ -34,6 +35,50 @@ const List<String> kOpenableExtensions = [
   'txt', 'scrb', 'rtf', 'md', 'log', 'csv', 'json', 'xml', 'yaml', 'yml', 'ini', 'cfg',
 ];
 
+/// Resolve a Ctrl+digit tab jump: digits 1-8 target that tab (1-based) when it
+/// exists; 9 always targets the last tab. Returns null when there is no valid
+/// target (out-of-range digit or not enough tabs).
+@visibleForTesting
+int? tabIndexForDigit(int digit, int tabCount) {
+  if (tabCount <= 0) return null;
+  if (digit == 9) return tabCount - 1;
+  if (digit < 1 || digit > 8) return null;
+  final index = digit - 1;
+  return index < tabCount ? index : null;
+}
+
+/// Session-local history of closed, file-backed tabs for Ctrl+Shift+T.
+/// Untitled tabs have no on-disk identity and are not restorable. Paths are
+/// deduplicated on push (a tab closed twice occupies one slot, at its most
+/// recent position) and compared canonically so Windows case/separator
+/// variants of one file cannot produce duplicate entries.
+@visibleForTesting
+class ClosedTabHistory {
+  static const int _capacity = 20;
+  final List<String> _paths = [];
+
+  void push(String path) {
+    final canonical = canonicalPath(path);
+    _paths.removeWhere((p) => canonicalPath(p) == canonical);
+    _paths.add(path);
+    if (_paths.length > _capacity) _paths.removeAt(0);
+  }
+
+  /// Pop the most recently closed path that is not currently open. Entries
+  /// matching [openPaths] are skipped and dropped (reopening them would just
+  /// activate the existing tab). Returns null when nothing is restorable.
+  String? popNextToReopen(Iterable<String> openPaths) {
+    final open = openPaths.map(canonicalPath).toSet();
+    while (_paths.isNotEmpty) {
+      final candidate = _paths.removeLast();
+      if (!open.contains(canonicalPath(candidate))) return candidate;
+    }
+    return null;
+  }
+
+  bool get isEmpty => _paths.isEmpty;
+}
+
 /// Main Scrib Desktop screen. Delegates dialogs to [dialogs/] and the
 /// save/save-as decision tree to [FileOperations].
 class MainScreen extends StatefulWidget {
@@ -47,6 +92,9 @@ class _MainScreenState extends State<MainScreen> {
   bool _isDragging = false;
   String? _processingMessage; // non-null → show loading overlay
   final _editorKey = GlobalKey<ScribEditorState>();
+
+  /// Closed file-backed tabs this session, most recent last (Ctrl+Shift+T).
+  final _closedTabs = ClosedTabHistory();
 
   /// The active tab's QuillController (null in plain-text mode). Published by
   /// ScribEditor so the formatting toolbar and find bar can react without a
@@ -245,6 +293,19 @@ class _MainScreenState extends State<MainScreen> {
       const SingleActivator(LogicalKeyboardKey.keyE, control: true): () => _toggleEncryption(context),
       const SingleActivator(LogicalKeyboardKey.tab, control: true): () => _nextTab(context),
       const SingleActivator(LogicalKeyboardKey.tab, control: true, shift: true): () => _prevTab(context),
+      // Ctrl+1..8 jump to that tab; Ctrl+9 jumps to the last tab.
+      const SingleActivator(LogicalKeyboardKey.digit1, control: true): () => _goToTab(context, 1),
+      const SingleActivator(LogicalKeyboardKey.digit2, control: true): () => _goToTab(context, 2),
+      const SingleActivator(LogicalKeyboardKey.digit3, control: true): () => _goToTab(context, 3),
+      const SingleActivator(LogicalKeyboardKey.digit4, control: true): () => _goToTab(context, 4),
+      const SingleActivator(LogicalKeyboardKey.digit5, control: true): () => _goToTab(context, 5),
+      const SingleActivator(LogicalKeyboardKey.digit6, control: true): () => _goToTab(context, 6),
+      const SingleActivator(LogicalKeyboardKey.digit7, control: true): () => _goToTab(context, 7),
+      const SingleActivator(LogicalKeyboardKey.digit8, control: true): () => _goToTab(context, 8),
+      const SingleActivator(LogicalKeyboardKey.digit9, control: true): () => _goToTab(context, 9),
+      const SingleActivator(LogicalKeyboardKey.keyT, control: true, shift: true): () =>
+          _reopenClosedTab(context),
+      const SingleActivator(LogicalKeyboardKey.keyG, control: true): () => _goToLine(context),
       const SingleActivator(LogicalKeyboardKey.keyM, control: true): () { _confirmToggleEditorMode(context); },
       const SingleActivator(LogicalKeyboardKey.equal, control: true): () => _zoomIn(context),
       const SingleActivator(LogicalKeyboardKey.minus, control: true): () => _zoomOut(context),
@@ -742,9 +803,12 @@ class _MainScreenState extends State<MainScreen> {
       final result = await _fileOps.saveActive(
         editor,
         passwordForNewEncryption: password,
+        confirmLossyRtf: () => _confirmLossyRtfSave(context),
       );
       if (!result.ok) {
-        if (context.mounted) _showSnack(context, 'Could not save file');
+        if (result.error != 'Cancelled' && context.mounted) {
+          _showSnack(context, 'Could not save file');
+        }
         return;
       }
       if (result.extensionChanged && context.mounted && result.newPath != null) {
@@ -776,6 +840,16 @@ class _MainScreenState extends State<MainScreen> {
           if (!context.mounted) return null;
           return showSetPasswordDialog(context);
         },
+        confirmLossyRtf: () => _confirmLossyRtfSave(context),
+        // Surface the encryption progress overlay only for actual .scrb
+        // writes, and BEFORE the slow key derivation starts (setting it after
+        // the awaited save completes showed nothing at all).
+        onWillWrite: (encrypted) {
+          if (encrypted) {
+            processing = true;
+            _setProcessing('Encrypting...');
+          }
+        },
       );
       if (!result.ok) {
         if (result.error != null && result.error != 'Cancelled' && context.mounted) {
@@ -783,11 +857,23 @@ class _MainScreenState extends State<MainScreen> {
         }
         return;
       }
-      // Surface encryption progress indicator only for actual .scrb writes.
-      if (tab.isEncrypted) processing = true;
     } finally {
       if (processing) _setProcessing(null);
     }
+  }
+
+  /// Confirmation shown before any Delta-to-RTF write that would drop image
+  /// or table embeds (RTF cannot represent them).
+  Future<bool> _confirmLossyRtfSave(BuildContext context) {
+    if (!context.mounted) return Future.value(false);
+    return showScribConfirm(
+      context,
+      title: 'Remove Images and Tables?',
+      message: 'RTF files cannot store images or tables. Saving as RTF will '
+          'remove them from this note. To keep them, cancel and use Save As '
+          'with the .scrb format.',
+      confirmLabel: 'Save Anyway',
+    );
   }
 
   Future<void> _renameTab(BuildContext context, int index, String newName) async {
@@ -882,7 +968,9 @@ class _MainScreenState extends State<MainScreen> {
     final tab = editor.tabs[index];
 
     if (!tab.isDirty) {
-      editor.closeTab(index);
+      if (editor.closeTab(index) && tab.filePath != null) {
+        _closedTabs.push(tab.filePath!);
+      }
       return;
     }
 
@@ -896,30 +984,45 @@ class _MainScreenState extends State<MainScreen> {
       final currentIndex = editor.tabs.indexOf(tab);
       if (currentIndex == -1) return;
       editor.setActiveTab(currentIndex);
+      if (!context.mounted) return;
+      // Route through the same flow as Ctrl+S so close-save gets password
+      // prompts, encryption/format extension swaps, and refusal handling.
+      // Calling editor.saveActiveTab() directly bypassed all of that and
+      // could write plaintext over a decrypt-toggled .scrb.
       if (tab.filePath != null) {
-        try {
-          await editor.saveActiveTab();
-        } catch (_) {
-          if (context.mounted) _showSnack(context, 'Could not save file');
-          return;
-        }
+        await _saveFile(context);
       } else {
-        if (!context.mounted) return;
         await _saveFileAs(context);
-        if (tab.isDirty) return;
       }
+      // A refused or cancelled save leaves the tab dirty: keep it open, the
+      // changes are not on disk.
+      if (tab.isDirty) return;
     }
 
     // Re-lookup — save/dialog may have shifted tab indices.
     final currentIndex = editor.tabs.indexOf(tab);
-    if (currentIndex != -1) editor.closeTab(currentIndex);
+    if (currentIndex != -1 &&
+        editor.closeTab(currentIndex) &&
+        tab.filePath != null) {
+      _closedTabs.push(tab.filePath!);
+    }
   }
 
   /// Close a set of tabs: clean ones are removed in one pass, dirty ones are
   /// routed through the unsaved-changes prompt one at a time.
   Future<void> _closeTabSet(BuildContext context, List<EditorTab> targets) async {
     final editor = context.read<EditorProvider>();
+    // Clean file-backed targets are removed by closeTabs below — record them
+    // for Ctrl+Shift+T. Dirty ones route through _closeTabByIndex, which
+    // records each on its actual close.
+    final cleanPaths = [
+      for (final t in targets)
+        if (!t.isDirty && t.filePath != null) t.filePath!,
+    ];
     final dirty = editor.closeTabs(targets);
+    for (final path in cleanPaths) {
+      _closedTabs.push(path);
+    }
     for (final tab in dirty) {
       if (!mounted) return;
       final idx = editor.tabs.indexOf(tab);
@@ -1038,6 +1141,46 @@ class _MainScreenState extends State<MainScreen> {
     if (editor.tabs.length > 1) {
       editor.setActiveTab((editor.activeTabIndex - 1 + editor.tabs.length) % editor.tabs.length);
     }
+  }
+
+  /// Ctrl+1..8 — jump to that tab; Ctrl+9 — jump to the last tab.
+  void _goToTab(BuildContext context, int digit) {
+    final editor = context.read<EditorProvider>();
+    final index = tabIndexForDigit(digit, editor.tabs.length);
+    if (index != null) editor.setActiveTab(index);
+  }
+
+  /// Ctrl+Shift+T — reopen the most recently closed file-backed tab.
+  Future<void> _reopenClosedTab(BuildContext context) async {
+    final editor = context.read<EditorProvider>();
+    final path = _closedTabs.popNextToReopen(
+        [for (final t in editor.tabs) if (t.filePath != null) t.filePath!]);
+    if (path == null) {
+      _showSnack(context, 'No closed tab to reopen.');
+      return;
+    }
+    if (!await File(path).exists()) {
+      if (context.mounted) {
+        _showSnack(context, 'Could not reopen: the file no longer exists.');
+      }
+      return;
+    }
+    if (!context.mounted) return;
+    await _openFilePath(context, path);
+  }
+
+  /// Ctrl+G — jump the caret to a line in the active plain-text tab.
+  Future<void> _goToLine(BuildContext context) async {
+    final editor = context.read<EditorProvider>();
+    final tab = editor.activeTab;
+    if (tab == null || tab.isLocked) return;
+    if (tab.mode == EditorMode.richText) {
+      _showSnack(context, 'Go to Line works in plain text tabs. Switch with Ctrl+M.');
+      return;
+    }
+    final line = await _showGoToLineDialog(context, maxLine: editor.lineCount);
+    if (line == null) return;
+    _editorKey.currentState?.goToLine(line);
   }
 
   void _zoomIn(BuildContext context) {
@@ -1226,6 +1369,10 @@ class _MainScreenState extends State<MainScreen> {
         shortcut: 'Ctrl+W', action: () => _closeCurrentTab(context),
       ),
       ScribCommand(
+        category: 'File', title: 'Reopen Closed Tab', icon: Icons.restore_page_outlined,
+        shortcut: 'Ctrl+Shift+T', action: () => _reopenClosedTab(context),
+      ),
+      ScribCommand(
         category: 'File', title: 'Set Save Location...', icon: Icons.folder_outlined,
         action: () => _showSaveLocationPicker(context),
       ),
@@ -1249,6 +1396,13 @@ class _MainScreenState extends State<MainScreen> {
         category: 'Edit', title: 'Search All Tabs...', icon: Icons.manage_search,
         shortcut: 'Ctrl+Shift+F', action: () => editor.toggleGlobalSearch(),
       ),
+      // Go to Line targets the plain-text editor only, like the menu's
+      // text-size items.
+      if (tab != null && !isLocked && !isRich)
+        ScribCommand(
+          category: 'Edit', title: 'Go to Line...', icon: Icons.arrow_right_alt,
+          shortcut: 'Ctrl+G', action: () => _goToLine(context),
+        ),
       if (!isLocked)
         ScribCommand(
           category: 'Edit',
@@ -1292,18 +1446,23 @@ class _MainScreenState extends State<MainScreen> {
           action: () => _toggleListShortcut(Attribute.unchecked),
         ),
       ],
-      ScribCommand(
-        category: 'View', title: 'Increase Text Size', icon: Icons.text_increase,
-        shortcut: 'Ctrl+=', action: () => _zoomIn(context),
-      ),
-      ScribCommand(
-        category: 'View', title: 'Decrease Text Size', icon: Icons.text_decrease,
-        shortcut: 'Ctrl+-', action: () => _zoomOut(context),
-      ),
-      ScribCommand(
-        category: 'View', title: 'Default Text Size', icon: Icons.text_fields,
-        shortcut: 'Ctrl+0', action: () => _resetZoom(context),
-      ),
+      // Text-size actions only apply to plain-text tabs (rich text sizes via
+      // inline attributes); hide them in rich tabs like the View menu disables
+      // them, instead of offering commands that silently no-op.
+      if (!isRich) ...[
+        ScribCommand(
+          category: 'View', title: 'Increase Text Size', icon: Icons.text_increase,
+          shortcut: 'Ctrl+=', action: () => _zoomIn(context),
+        ),
+        ScribCommand(
+          category: 'View', title: 'Decrease Text Size', icon: Icons.text_decrease,
+          shortcut: 'Ctrl+-', action: () => _zoomOut(context),
+        ),
+        ScribCommand(
+          category: 'View', title: 'Default Text Size', icon: Icons.text_fields,
+          shortcut: 'Ctrl+0', action: () => _resetZoom(context),
+        ),
+      ],
       ScribCommand(
         category: 'View',
         title: settings.showLineNumbers ? 'Hide Line Numbers' : 'Show Line Numbers',
@@ -1394,6 +1553,74 @@ class _MainScreenState extends State<MainScreen> {
         content: Text(message),
         behavior: SnackBarBehavior.floating,
       ),
+    );
+  }
+}
+
+/// Ctrl+G dialog. Returns the 1-based line number (clamped to [maxLine]) or
+/// null on cancel.
+Future<int?> _showGoToLineDialog(BuildContext context, {required int maxLine}) {
+  return showDialog<int>(
+    context: context,
+    builder: (ctx) => _GoToLineDialog(maxLine: maxLine),
+  );
+}
+
+/// Owns its controller so the framework disposes it when the route is removed
+/// (after the exit animation) — same lifecycle pattern as the password dialogs.
+class _GoToLineDialog extends StatefulWidget {
+  final int maxLine;
+  const _GoToLineDialog({required this.maxLine});
+
+  @override
+  State<_GoToLineDialog> createState() => _GoToLineDialogState();
+}
+
+class _GoToLineDialogState extends State<_GoToLineDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final line = int.tryParse(_controller.text.trim());
+    if (line == null || line < 1) return;
+    Navigator.pop(context, line.clamp(1, widget.maxLine));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Go to Line'),
+      content: SizedBox(
+        width: 260,
+        child: TextField(
+          controller: _controller,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          decoration: InputDecoration(
+            labelText: 'Line number (1-${widget.maxLine})',
+            border: const OutlineInputBorder(),
+            enabledBorder: const OutlineInputBorder(),
+            focusedBorder: const OutlineInputBorder(),
+          ),
+          onSubmitted: (_) => _submit(),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: const Text('Go'),
+        ),
+      ],
     );
   }
 }

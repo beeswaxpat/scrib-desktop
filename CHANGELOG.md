@@ -4,6 +4,127 @@ All notable changes to Scrib Desktop are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] - 2026-07-16 - Save integrity, exact find and replace, and RTF fidelity
+
+A correctness release across every layer: the save paths, rich-text find and
+replace, RTF import/export, the calculator, and the UI. **The `.scrb` file
+format and settings schema are unchanged**; existing files open untouched.
+
+### Fixed
+
+**Save integrity**
+- **Critical: background saves could write decrypted plaintext over an
+  encrypted `.scrb`.** After toggling decryption with `Ctrl+E`, the auto-save,
+  close-tab save, and quit save paths wrote the decrypted content back to the
+  `.scrb` path, destroying the encrypted file and leaving the note unencrypted
+  on disk. Every save path now refuses encryption/extension mismatches and
+  routes format changes through the manual save's explicit extension swap.
+  See SECURITY.md for guidance if you used `Ctrl+E` in an earlier version.
+- Saving a rich-text note into a `.txt` no longer writes raw JSON into the
+  file; the save converts to `.rtf` with a notice. Plain `.txt` files that an
+  older build wrote with the rich-text envelope open as rich text again.
+- Re-opening an already open encrypted note (Recent Files, Open, drag-drop)
+  no longer wipes its unsaved edits by reloading from disk.
+- Saving rich text to RTF asks before dropping images and tables (RTF cannot
+  carry them); auto-save defers such writes to a manual save instead of
+  silently discarding embeds.
+- Crash recovery now repairs interrupted saves for files outside the default
+  save folder, not just inside it.
+- A crafted `.scrb` header can no longer stall the app with a huge PBKDF2
+  work factor: the per-file iteration count is capped at 2,000,000 on read.
+- Opening the same file through different path capitalizations no longer
+  produces two tabs that silently overwrite each other's saves.
+- Save As of an encrypted note shows the Encrypting overlay during the save.
+- A failed save during tab locking keeps the tab unlocked with its edits
+  intact, instead of wiping unsaved work.
+- One more save mutator now refuses locked tabs, and Save As reports failure
+  instead of claiming success when the write was refused.
+
+**Editor and UI**
+- The editor is bound to the tab's identity, not its position: closing the
+  active tab could previously leave the editor attached to the closed tab's
+  content and route typing into the wrong note.
+- App shortcuts now win over the rich-text engine's built-ins: `Ctrl+Shift+S`
+  performed strikethrough instead of Save As, and `Ctrl+K` opened the
+  engine's unrestricted link dialog instead of Scrib's allowlisted one.
+- Rich-text **Find and Replace target exact document positions**: notes with
+  images or tables are no longer corrupted by Replace or Replace All landing
+  at shifted offsets.
+- Replace verifies the match under the cursor before replacing; on a
+  mismatch it jumps to the next match instead of overwriting other text.
+- Tables inside lists or blockquotes keep saving cell edits.
+- An unknown embed type renders a placeholder chip instead of failing to
+  render the note.
+- The status bar shows the file's actual extension (`.md`, `.json`, ...)
+  instead of only the editing mode.
+- The encryption indicator is readable on the light theme, and the note-color
+  ring is visible on the light theme.
+- Escape cancels a tab rename in progress.
+- The command palette hides plain-text-only text-size actions in rich tabs.
+- Text-size dialog controller lifecycle corrected.
+
+**RTF**
+- Formatting is group-scoped on import, so styles no longer bleed past the
+  group that set them.
+- WordPad and Word generator metadata no longer imports as note text.
+- Numbered lists export with their numbers; lists, checklists, headers, and
+  block quotes survive a save and reopen round-trip.
+- Subscript and superscript survive import.
+- The full font table is parsed, including multi-word font names.
+
+**Calculator**
+- Results in scientific notation chain with `=`, and the parser accepts
+  e-notation input.
+- Deeply nested expressions show a clear error instead of risking a crash.
+- Pinned behaviors: `(-8)^0.5` reports undefined, `0^0 = 1`, and overflow
+  reports the result as too large.
+
+### Added
+- **Tab jumps**: `Ctrl+1` through `Ctrl+8` go to that tab, `Ctrl+9` to the
+  last tab.
+- **Reopen closed tab** (`Ctrl+Shift+T`).
+- **Go to line** (`Ctrl+G`, plain text) plus a live `Ln, Col` readout in the
+  status bar.
+- **Find bar options**: Match case and Whole word toggles, `F3` /
+  `Shift+F3` for next/previous from anywhere in the tab, `Shift+Enter` for
+  previous match, selected text pre-fills the query, and Enter keeps focus in
+  the bar.
+- **Hyperlinks survive RTF round-trips** as HYPERLINK fields; link targets
+  are restricted to http, https, and mailto on import, the same allowlist the
+  editor enforces.
+- **Tag-triggered release workflow**: pushing a `v*` tag builds the Windows
+  release, packages it as a zip with a SHA-256 checksum file, and publishes a
+  GitHub Release with generated notes.
+- ARCHITECTURE.md: module map, load-bearing invariants, and save-path routing
+  for contributors.
+- Dependabot updates for GitHub Actions and pub (with `flutter_quill` kept
+  pinned), a pull request template with an invariants checklist, and issue
+  template contact links.
+
+### Improved
+- Search All Tabs is debounced and cached, follows tabs that move or close
+  while results are open, works from the keyboard, and finds text inside
+  tables. Cross-tab search and the per-tab counts now share one extraction
+  path.
+- The rich-text editor re-serializes the document only on actual document
+  changes, not on every cursor move.
+- Table cell text counts toward word counts and is searchable.
+- Cursor movement no longer re-scans the document for the status bar.
+- Images decode at display size with a bounded cache, instead of at full
+  resolution on every rebuild.
+- The active tab scrolls into view on switch, and the tab strip has a
+  scrollbar.
+- RTF parsing is faster, and hostile RTF input is bounded.
+- The link gates reject raw whitespace and control characters anywhere in a
+  URL, closing scheme-smuggling attempts; both gates are covered by a
+  hostile-variant test battery (case tricks, embedded tabs and newlines,
+  homoglyph schemes, `file:`/`data:` and friends).
+
+### Notes
+- Auto-save and auto-lock timers, atomic-write failure paths, session-restore
+  corruption handling, and the embed codecs all gained regression tests.
+- Test suite grown from 332 to 518.
+
 ## [1.8.0] - 2026-07-11 - A formatting toolbar you can actually reach, checklists, and links
 
 A rich-text usability release, triggered by a real bug report: the bullet

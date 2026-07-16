@@ -69,50 +69,81 @@ Future<double?> showFontSizeInput(
   required double current,
   double min = 6,
   double max = 144,
-}) async {
-  final controller = TextEditingController(text: '${current.round()}');
+}) {
+  return showDialog<double>(
+    context: context,
+    builder: (ctx) => _FontSizeInputDialog(current: current, min: min, max: max),
+  );
+}
 
-  double? parse(String v) {
-    final parsed = double.tryParse(v);
-    if (parsed == null) return null;
-    return parsed.clamp(min, max);
+/// Owns its controller so the framework disposes it when the route is removed
+/// (after the exit animation) — same lifecycle pattern as the password
+/// dialogs. The old function-local controller was disposed the moment
+/// showDialog's future completed, while the closing dialog was still animating
+/// out with a TextField bound to it.
+class _FontSizeInputDialog extends StatefulWidget {
+  final double current;
+  final double min;
+  final double max;
+
+  const _FontSizeInputDialog({
+    required this.current,
+    required this.min,
+    required this.max,
+  });
+
+  @override
+  State<_FontSizeInputDialog> createState() => _FontSizeInputDialogState();
+}
+
+class _FontSizeInputDialogState extends State<_FontSizeInputDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: '${widget.current.round()}');
   }
 
-  final result = await showDialog<double>(
-    context: context,
-    builder: (ctx) => AlertDialog(
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit(String value) {
+    final parsed = double.tryParse(value);
+    if (parsed == null) return;
+    Navigator.pop(context, parsed.clamp(widget.min, widget.max));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       title: const Text('Set Text Size'),
       content: TextField(
-        controller: controller,
+        controller: _controller,
         autofocus: true,
         keyboardType: TextInputType.number,
         decoration: InputDecoration(
-          labelText: 'Font size (${min.toInt()}–${max.toInt()})',
+          labelText: 'Font size (${widget.min.toInt()}-${widget.max.toInt()})',
           border: const OutlineInputBorder(),
           enabledBorder: const OutlineInputBorder(),
           focusedBorder: const OutlineInputBorder(),
         ),
-        onSubmitted: (value) {
-          final parsed = parse(value);
-          if (parsed != null) Navigator.pop(ctx, parsed);
-        },
+        onSubmitted: _submit,
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(ctx),
+          onPressed: () => Navigator.pop(context),
           child: const Text('Cancel'),
         ),
         FilledButton(
-          onPressed: () {
-            final parsed = parse(controller.text);
-            if (parsed != null) Navigator.pop(ctx, parsed);
-          },
+          onPressed: () => _submit(_controller.text),
           child: const Text('Apply'),
         ),
       ],
-    ),
-  );
-  controller.dispose();
-  return result;
+    );
+  }
 }

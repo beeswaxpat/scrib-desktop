@@ -65,7 +65,10 @@ class ScribColors extends ThemeExtension<ScribColors> {
     textSecondary: Color(0xFF555555),
     textMuted: Color(0xFF666666),
     textDisabled: Color(0xFFCCCCCC),
-    encryptionLock: Color(0xFFFBBF24),
+    // Dark amber: the dark theme's gold (#FBBF24) is ~1.5:1 against the light
+    // #F0F0F0 chrome — unreadable. This passes WCAG AA (~4.6:1) for the 11px
+    // status text and lock icons.
+    encryptionLock: Color(0xFF92640C),
   );
 
   @override

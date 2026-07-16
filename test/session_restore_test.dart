@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
 import 'package:scrib_desktop/providers/editor_provider.dart';
+import 'package:scrib_desktop/services/atomic_write.dart';
 import 'package:scrib_desktop/services/file_service.dart';
 import 'package:scrib_desktop/services/settings_service.dart';
 
@@ -156,12 +158,91 @@ void main() {
       expect(launched.tabs[0].filePath, a);
     });
 
+    test('restores a file stranded at .scrib-bak by a mid-rename crash', () async {
+      final a = p('crashed.txt');
+      await File('$a${AtomicWrite.bakSuffix}').writeAsString('rescued body');
+
+      await settings.saveSession([
+        {'path': a},
+      ], 0);
+
+      final launched = EditorProvider(fs, settings);
+      addTearDown(launched.dispose);
+
+      final restored = await launched.restorePreviousSession();
+      expect(restored, 1, reason: 'the stranded file must not be dropped');
+      expect(launched.tabs[0].filePath, a);
+      expect(launched.tabs[0].controller.text, 'rescued body');
+      expect(await File(a).exists(), isTrue);
+    });
+
     test('empty session restores nothing and keeps the untitled tab', () async {
       final launched = EditorProvider(fs, settings);
       addTearDown(launched.dispose);
       expect(await launched.restorePreviousSession(), 0);
       expect(launched.tabs.length, 1);
       expect(launched.tabs[0].filePath, isNull);
+    });
+
+    test('malformed entries are skipped without aborting the restore',
+        () async {
+      final good = p('good.txt');
+      await File(good).writeAsString('good content');
+
+      // Write the session JSON directly: a corrupt settings file can hold
+      // entry shapes saveSession's typed signature could never produce.
+      final box = await Hive.openBox('scrib_desktop_settings');
+      await box.put(
+          'sessionJson',
+          jsonEncode({
+            'tabs': [
+              {'path': 123}, // wrong type
+              {'path': null}, // null path
+              {'color': 4}, // missing path
+              'not a map', // non-map entry
+              {'path': ''}, // empty path
+              {'path': good, 'color': 'red'}, // wrong color type
+            ],
+            'active': 99, // out of range
+          }));
+
+      final launched = EditorProvider(fs, settings);
+      addTearDown(launched.dispose);
+
+      final restored = await launched.restorePreviousSession();
+      expect(restored, 1, reason: 'only the valid entry restores');
+      expect(launched.tabs.length, 1);
+      expect(launched.tabs[0].filePath, good);
+      expect(launched.tabs[0].controller.text, 'good content');
+      expect(launched.tabs[0].colorIndex, isNull,
+          reason: 'a non-int color must be ignored, not crash');
+    });
+
+    test('a file that throws mid-restore does not abort the rest', () async {
+      final before = p('before.txt');
+      final bad = p('bad.txt');
+      final after = p('after.txt');
+      await File(before).writeAsString('first');
+      // Invalid UTF-8: readTxtFile throws ScribFileReadException on decode.
+      await File(bad).writeAsBytes([0xC3, 0x28, 0xFF, 0xFE]);
+      await File(after).writeAsString('last');
+
+      await settings.saveSession([
+        {'path': before},
+        {'path': bad},
+        {'path': after},
+      ], 2);
+
+      final launched = EditorProvider(fs, settings);
+      addTearDown(launched.dispose);
+
+      final restored = await launched.restorePreviousSession();
+      expect(restored, 2, reason: 'the throwing file is skipped, not fatal');
+      expect(launched.tabs.map((t) => t.filePath), containsAll([before, after]));
+      expect(launched.tabs.any((t) => t.filePath == bad), isFalse);
+      // The saved active index pointed at the LAST entry; the entry that
+      // failed in the middle must not shift which tab comes back active.
+      expect(launched.activeTab!.filePath, after);
     });
   });
 

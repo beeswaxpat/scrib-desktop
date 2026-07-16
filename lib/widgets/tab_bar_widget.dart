@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../providers/editor_provider.dart';
+import '../theme/scrib_colors.dart';
 import '../constants.dart';
 
 /// Tabbed file bar with per-tab color dots, close buttons, and double-click rename.
@@ -30,6 +32,9 @@ class _ScribTabBarState extends State<ScribTabBar> {
   int? _hoveredIndex;
   late TextEditingController _renameController;
   late FocusNode _renameFocus;
+  final _tabScrollController = ScrollController();
+  final _activeTabKey = GlobalKey();
+  int _lastRevealedIndex = -1;
 
   @override
   void initState() {
@@ -44,6 +49,7 @@ class _ScribTabBarState extends State<ScribTabBar> {
     _renameController.dispose();
     _renameFocus.removeListener(_onRenameFocusChange);
     _renameFocus.dispose();
+    _tabScrollController.dispose();
     super.dispose();
   }
 
@@ -51,6 +57,41 @@ class _ScribTabBarState extends State<ScribTabBar> {
     if (!_renameFocus.hasFocus && _editingIndex != null) {
       _commitRename();
     }
+  }
+
+  /// Escape cancels an in-progress rename (Enter commits, click-away commits —
+  /// Explorer / VS Code conventions). Clearing _editingIndex before the
+  /// TextField loses focus makes the focus-loss listener a no-op, so nothing
+  /// is committed. Handling the key here (nearest to the focused node) also
+  /// keeps it from reaching MainScreen's global Escape binding.
+  KeyEventResult _onRenameKey(FocusNode node, KeyEvent event) {
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.escape) {
+      if (_editingIndex != null) {
+        setState(() => _editingIndex = null);
+      }
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  /// Scroll the active tab fully into view (Ctrl+Tab can land on a tab that is
+  /// scrolled outside the strip). The two alignment policies together scroll
+  /// only as far as needed, and not at all when the tab is already visible.
+  void _revealActiveTab() {
+    if (!mounted) return;
+    final ctx = _activeTabKey.currentContext;
+    if (ctx == null) return;
+    Scrollable.ensureVisible(
+      ctx,
+      alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+      duration: const Duration(milliseconds: 120),
+    );
+    Scrollable.ensureVisible(
+      ctx,
+      alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtStart,
+      duration: const Duration(milliseconds: 120),
+    );
   }
 
   void _startRename(int index, String currentName) {
@@ -157,29 +198,61 @@ class _ScribTabBarState extends State<ScribTabBar> {
     final colorScheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
+    // Keep the active tab visible whenever activation changes (click, Ctrl+Tab,
+    // Ctrl+1..9, open-file). Runs post-frame so the tab is laid out first.
+    if (editor.activeTabIndex != _lastRevealedIndex) {
+      _lastRevealedIndex = editor.activeTabIndex;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _revealActiveTab());
+    }
+
     return Container(
       height: 36,
       color: isDark ? const Color(0xFF141414) : const Color(0xFFF0F0F0),
       child: Row(
         children: [
           Expanded(
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              itemCount: editor.tabs.length,
-              itemBuilder: (context, index) {
-                final tab = editor.tabs[index];
-                final isActive = index == editor.activeTabIndex;
-                final isHovered = _hoveredIndex == index;
-                final tabColor = tab.colorIndex != null
-                    ? accentColors[tab.colorIndex!.clamp(0, accentColors.length - 1)]
-                    : null;
+            child: Scrollbar(
+              controller: _tabScrollController,
+              child: SingleChildScrollView(
+                controller: _tabScrollController,
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (int index = 0; index < editor.tabs.length; index++)
+                      _buildTab(context, editor, index, colorScheme, isDark),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          _buildNewTabButton(editor, colorScheme),
+        ],
+      ),
+    );
+  }
 
-                return MouseRegion(
-                  onEnter: (_) => setState(() => _hoveredIndex = index),
-                  onExit: (_) {
-                    if (_hoveredIndex == index) setState(() => _hoveredIndex = null);
-                  },
-                  child: GestureDetector(
+  Widget _buildTab(
+    BuildContext context,
+    EditorProvider editor,
+    int index,
+    ColorScheme colorScheme,
+    bool isDark,
+  ) {
+    final tab = editor.tabs[index];
+    final isActive = index == editor.activeTabIndex;
+    final isHovered = _hoveredIndex == index;
+    final tabColor = tab.colorIndex != null
+        ? accentColors[tab.colorIndex!.clamp(0, accentColors.length - 1)]
+        : null;
+
+    return MouseRegion(
+      key: isActive ? _activeTabKey : null,
+      onEnter: (_) => setState(() => _hoveredIndex = index),
+      onExit: (_) {
+        if (_hoveredIndex == index) setState(() => _hoveredIndex = null);
+      },
+      child: GestureDetector(
                   onTap: () => editor.setActiveTab(index),
                   onDoubleTap: () => _startRename(index, tab.fileName),
                   onTertiaryTapUp: (_) => widget.onCloseTab(index),
@@ -222,8 +295,9 @@ class _ScribTabBarState extends State<ScribTabBar> {
                               ),
                             ),
                           ),
-                        // Encryption icon — gold while the tab is locked
-                        // (content wiped from memory), accent when unlocked.
+                        // Encryption icon — theme-aware lock color while the
+                        // tab is locked (content wiped from memory), accent
+                        // when unlocked.
                         if (tab.isEncrypted)
                           Padding(
                             padding: const EdgeInsets.only(right: 4),
@@ -231,7 +305,7 @@ class _ScribTabBarState extends State<ScribTabBar> {
                               Icons.lock,
                               size: 12,
                               color: tab.isLocked
-                                  ? const Color(0xFFFBBF24)
+                                  ? context.scribColors.encryptionLock
                                   : (tabColor ?? colorScheme.primary),
                             ),
                           ),
@@ -240,7 +314,9 @@ class _ScribTabBarState extends State<ScribTabBar> {
                           child: _editingIndex == index
                               ? SizedBox(
                                   height: 24,
-                                  child: TextField(
+                                  child: Focus(
+                                    onKeyEvent: _onRenameKey,
+                                    child: TextField(
                                     controller: _renameController,
                                     focusNode: _renameFocus,
                                     style: TextStyle(
@@ -262,6 +338,7 @@ class _ScribTabBarState extends State<ScribTabBar> {
                                       ),
                                     ),
                                     onSubmitted: (_) => _commitRename(),
+                                    ),
                                   ),
                                 )
               : Tooltip(
@@ -307,32 +384,28 @@ class _ScribTabBarState extends State<ScribTabBar> {
                     ),
                   ),
                 ),
-                );
-              },
+    );
+  }
+
+  Widget _buildNewTabButton(EditorProvider editor, ColorScheme colorScheme) {
+    return Semantics(
+      label: 'New tab',
+      button: true,
+      child: Tooltip(
+        message: 'New tab (Ctrl+N)',
+        waitDuration: const Duration(milliseconds: 500),
+        child: InkWell(
+          onTap: () => editor.addNewTab(),
+          borderRadius: BorderRadius.circular(4),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            child: Icon(
+              Icons.add,
+              size: 20,
+              color: colorScheme.primary,
             ),
           ),
-          // New tab button
-          Semantics(
-            label: 'New tab',
-            button: true,
-            child: Tooltip(
-              message: 'New tab (Ctrl+N)',
-              waitDuration: const Duration(milliseconds: 500),
-              child: InkWell(
-                onTap: () => editor.addNewTab(),
-                borderRadius: BorderRadius.circular(4),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  child: Icon(
-                    Icons.add,
-                    size: 20,
-                    color: colorScheme.primary,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }

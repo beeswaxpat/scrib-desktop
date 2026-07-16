@@ -1,15 +1,75 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../constants.dart';
+import '../services/atomic_write.dart';
 import '../services/file_service.dart';
 import '../services/rtf_service.dart';
 import '../services/settings_service.dart';
+import '../services/table_embed.dart';
 
 /// Editor mode for each tab
 enum EditorMode { plainText, richText }
+
+/// True when [deltaJson] contains any non-text insert op (image or table
+/// embeds). RTF conversion drops those ops, so every Delta-to-RTF write path
+/// must check this and warn (manual save) or defer (auto-save) instead of
+/// silently discarding the embeds and marking the tab clean.
+bool deltaHasEmbeds(String deltaJson) {
+  if (deltaJson.isEmpty) return false;
+  try {
+    final ops = jsonDecode(deltaJson);
+    if (ops is! List) return false;
+    for (final op in ops) {
+      if (op is Map && op['insert'] is! String) return true;
+    }
+    return false;
+  } catch (_) {
+    return false;
+  }
+}
+
+/// Plain text for COUNTING and SEARCHING, extracted from Quill Delta JSON.
+///
+/// Unlike the mode-conversion extraction (which must stay byte-faithful to the
+/// visible text), this keeps embed content visible to search and stats:
+///  * table embeds contribute their cell text (cells separated by newlines so
+///    a query can never falsely match across two adjacent cells);
+///  * any other embed (image, unknown) becomes a single space so the words on
+///    either side of an inline image are not fused into one.
+///
+/// The offsets in the returned string do NOT correspond to Quill document
+/// positions — use it only where counts matter, never to target a replace.
+/// Reusable by any surface that needs searchable/countable note text (per-tab
+/// stats, global search, future previews).
+String extractSearchableDeltaText(String deltaJson) {
+  if (deltaJson.isEmpty) return '';
+  try {
+    final ops = jsonDecode(deltaJson);
+    if (ops is! List) return '';
+    final buffer = StringBuffer();
+    for (final op in ops) {
+      if (op is! Map || !op.containsKey('insert')) continue;
+      final insert = op['insert'];
+      if (insert is String) {
+        buffer.write(insert);
+      } else if (insert is Map) {
+        final table = ScribTable.fromCustomEmbedData(insert['custom']);
+        final cellText = table?.searchableCellText ?? '';
+        buffer.write(cellText.isNotEmpty ? cellText : ' ');
+      }
+    }
+    // Remove the trailing newline that Quill always adds.
+    var result = buffer.toString();
+    if (result.endsWith('\n')) {
+      result = result.substring(0, result.length - 1);
+    }
+    return result;
+  } catch (_) {
+    return '';
+  }
+}
 
 /// Snapshot of a tab's content before a destructive operation (mode toggle).
 /// Lets us offer the user a one-step revert if they toggled by mistake.
@@ -171,16 +231,37 @@ class EditorProvider extends ChangeNotifier {
   // Cached plain text for word/char/line counts (avoids re-parsing Delta per getter).
   String? _cachedActiveText;
 
+  // Cached word/char/line counts, computed in ONE pass over the cached text so
+  // the status bar's three getters never trigger three separate document scans.
+  ({int words, int chars, int lines})? _cachedCounts;
+
+  /// Invalidate the cached active-tab text and its derived counts together.
+  void _invalidateActiveText() {
+    _cachedActiveText = null;
+    _cachedCounts = null;
+  }
+
   // Auto-save timer — started/restarted whenever the interval setting changes.
   Timer? _autoSaveTimer;
 
   // Auto-lock: a coarse periodic check compares the last user activity against
   // the configured idle threshold and locks every lockable encrypted tab.
   Timer? _autoLockTimer;
-  DateTime _lastActivity = DateTime.now();
-  static const _autoLockPollInterval = Duration(seconds: 10);
+  late DateTime _lastActivity;
+  final Duration _autoLockPollInterval;
 
-  EditorProvider(this._fileService, this._settingsService) {
+  /// Clock used for the auto-lock idle calculation. Injectable so tests can
+  /// advance idle time deterministically; production always uses the default.
+  final DateTime Function() _now;
+
+  EditorProvider(
+    this._fileService,
+    this._settingsService, {
+    @visibleForTesting DateTime Function()? now,
+    @visibleForTesting Duration autoLockPollInterval = const Duration(seconds: 10),
+  })  : _now = now ?? DateTime.now,
+        _autoLockPollInterval = autoLockPollInterval {
+    _lastActivity = _now();
     _settingsService.addListener(_onSettingsChanged);
     _updateAutoSave();
     _updateAutoLock();
@@ -207,7 +288,7 @@ class EditorProvider extends ChangeNotifier {
     final minutes = _settingsService.autoLockMinutes;
     if (minutes > 0) {
       _autoLockTimer = Timer.periodic(_autoLockPollInterval, (_) {
-        if (DateTime.now().difference(_lastActivity).inSeconds >= minutes * 60) {
+        if (_now().difference(_lastActivity).inSeconds >= minutes * 60) {
           unawaited(lockAllEncrypted());
         }
       });
@@ -216,7 +297,7 @@ class EditorProvider extends ChangeNotifier {
 
   /// Called by the UI on any pointer or key event so the auto-lock idle clock
   /// resets. Deliberately does NOT notify — it fires on every keystroke.
-  void noteActivity() => _lastActivity = DateTime.now();
+  void noteActivity() => _lastActivity = _now();
 
   Future<void> _autoSaveAll() async {
     await _saveDirtyFileBackedTabs();
@@ -260,26 +341,62 @@ class EditorProvider extends ChangeNotifier {
 
   /// Write a single tab to its existing [filePath] using extension-aware
   /// routing: encrypted → .scrb, rich-text .rtf → Delta-to-RTF, otherwise
-  /// plain text. Returns false (without writing) if the tab cannot be saved
-  /// safely (no path, or encrypted with no password — never write plaintext
-  /// into a .scrb). Throws on I/O failure.
+  /// plain text. Returns false (without writing) whenever the tab cannot be
+  /// saved safely to the path it currently points at:
+  ///
+  ///  * no path, or the tab is locked;
+  ///  * encrypted with no password in memory (never write plaintext into a
+  ///    .scrb);
+  ///  * the encryption flag mismatches the on-disk extension in EITHER
+  ///    direction — plaintext must never land in a .scrb and ciphertext must
+  ///    never land in a .txt/.rtf. This state is reachable via Ctrl+E, which
+  ///    flips [EditorTab.isEncrypted] without touching [EditorTab.filePath];
+  ///    only the manual save path (FileOperations.saveActive) performs the
+  ///    extension swap, so background saves must refuse and stay dirty;
+  ///  * a rich-text tab over a plain file (the scrib_rich envelope would
+  ///    corrupt the .txt), or a plain-mode tab over a .rtf (a headerless .rtf
+  ///    is rejected by Word/WordPad) — same manual-swap rule;
+  ///  * a Delta with image/table embeds targeting a .rtf — RTF conversion
+  ///    drops embeds, so the write is deferred to the manual (confirming)
+  ///    save path.
+  ///
+  /// Refused tabs stay dirty, so the quit flow's saveAllSaveable backstop
+  /// keeps refusing to discard them. Throws on I/O failure.
   Future<bool> _saveTabToDisk(EditorTab tab) async {
     final path = tab.filePath;
     if (path == null) return false;
     // A locked tab's in-memory content is empty by design — writing it would
     // destroy the encrypted file. Locked tabs are never saved.
     if (tab.isLocked) return false;
+    final lower = path.toLowerCase();
+    final isScrbPath = lower.endsWith('.scrb');
     final content = tab.getSaveContent();
+
     if (tab.isEncrypted) {
       if (tab.password == null) return false;
+      if (!isScrbPath) return false; // ciphertext only ever goes into .scrb
       await _fileService.writeScrbFile(path, content, tab.password!);
-    } else if (tab.mode == EditorMode.richText &&
-        path.toLowerCase().endsWith('.rtf') &&
-        tab.deltaJson.isNotEmpty) {
-      await _fileService.writeRtfFile(path, RtfService.deltaToRtf(tab.deltaJson));
-    } else {
-      await _fileService.writeTxtFile(path, content);
+      return true;
     }
+
+    if (isScrbPath) return false; // plaintext never goes into a .scrb
+
+    if (lower.endsWith('.rtf')) {
+      if (tab.mode != EditorMode.richText || tab.deltaJson.isEmpty) {
+        return false; // plain text into a .rtf produces a headerless file
+      }
+      if (deltaHasEmbeds(tab.deltaJson)) {
+        return false; // lossy write — needs the manual path's confirmation
+      }
+      await _fileService.writeRtfFile(path, RtfService.deltaToRtf(tab.deltaJson));
+      return true;
+    }
+
+    if (tab.mode == EditorMode.richText && tab.deltaJson.isNotEmpty) {
+      return false; // scrib_rich envelope would corrupt the plain file
+    }
+
+    await _fileService.writeTxtFile(path, content);
     return true;
   }
 
@@ -303,12 +420,23 @@ class EditorProvider extends ChangeNotifier {
   Future<bool> lockTab(EditorTab tab) async {
     if (!_tabs.contains(tab) || !tab.canLock) return false;
     if (tab.isDirty) {
-      // canLock guarantees password != null here.
-      if (!await _saveTabToDisk(tab)) return false;
+      // canLock guarantees password != null here. A save failure of ANY kind
+      // (refusal or I/O exception) must keep the tab unlocked: lock() wipes
+      // the in-memory content, and the idle auto-lock timer runs unawaited,
+      // so a throw here would both destroy unsaved edits and escape as an
+      // unhandled async exception.
+      try {
+        if (!await _saveTabToDisk(tab)) return false;
+      } catch (e) {
+        if (kDebugMode) {
+          debugPrint('Pre-lock save failed for ${tab.fileName}: $e');
+        }
+        return false;
+      }
       tab.markSaved();
     }
     tab.lock();
-    _cachedActiveText = null;
+    _invalidateActiveText();
     notifyListeners();
     return true;
   }
@@ -330,7 +458,7 @@ class EditorProvider extends ChangeNotifier {
   /// its password (used by session restore). If the file is already open, the
   /// existing tab is activated instead.
   EditorTab addLockedTab(String path, {int? colorIndex}) {
-    final existingIndex = _tabs.indexWhere((t) => t.filePath == path);
+    final existingIndex = _indexOfOpenPath(path);
     if (existingIndex != -1) {
       _activeTabIndex = existingIndex;
       notifyListeners();
@@ -350,15 +478,19 @@ class EditorProvider extends ChangeNotifier {
     if (_tabs.length == 1 && activeTab != null &&
         activeTab!.filePath == null && !activeTab!.isDirty &&
         activeTab!.controller.text.isEmpty) {
-      _tabs[0].dispose();
+      // Deferred disposal (closeTab's pattern): a synchronous dispose fires
+      // controller notifications mid-update. The replaced tab is empty and
+      // untitled, so nothing sensitive waits on the microtask.
+      final replaced = _tabs[0];
       _tabs[0] = tab;
       _activeTabIndex = 0;
+      Future.microtask(replaced.dispose);
     } else {
       _tabs.add(tab);
       _activeTabIndex = _tabs.length - 1;
     }
 
-    _cachedActiveText = null;
+    _invalidateActiveText();
     notifyListeners();
     return tab;
   }
@@ -426,7 +558,10 @@ class EditorProvider extends ChangeNotifier {
       if (path is! String || path.isEmpty) continue;
       final color = entry['color'];
       try {
-        if (!await File(path).exists()) continue;
+        // Lazy crash repair: a fallback rename interrupted mid-swap leaves the
+        // file's content stranded at <path>.scrib-bak with no primary. Restore
+        // it here rather than silently dropping the tab from the session.
+        if (!await AtomicWrite.recoverFileIfNeeded(path)) continue;
         final ext = _fileService.getExtension(path).toLowerCase();
         EditorTab? opened;
         if (ext == '.scrb') {
@@ -452,7 +587,7 @@ class EditorProvider extends ChangeNotifier {
       if (idx != -1) _activeTabIndex = idx;
     }
     if (restored > 0) {
-      _cachedActiveText = null;
+      _invalidateActiveText();
       notifyListeners();
     }
     return restored;
@@ -483,14 +618,14 @@ class EditorProvider extends ChangeNotifier {
     );
     _tabs.add(tab);
     _activeTabIndex = _tabs.length - 1;
-    _cachedActiveText = null;
+    _invalidateActiveText();
     notifyListeners();
   }
 
   void setActiveTab(int index) {
     if (index >= 0 && index < _tabs.length) {
       _activeTabIndex = index;
-      _cachedActiveText = null;
+      _invalidateActiveText();
       notifyListeners();
     }
   }
@@ -519,7 +654,7 @@ class EditorProvider extends ChangeNotifier {
       _activeTabIndex--;
     }
 
-    _cachedActiveText = null;
+    _invalidateActiveText();
     notifyListeners();
 
     // Defer disposal — synchronous dispose fires notifyListeners() and stutters.
@@ -579,7 +714,7 @@ class EditorProvider extends ChangeNotifier {
       _activeTabIndex = keptActive != -1 ? keptActive : _tabs.length - 1;
     }
 
-    _cachedActiveText = null;
+    _invalidateActiveText();
     notifyListeners();
 
     // Defer disposal — synchronous dispose stutters the close frame.
@@ -595,10 +730,20 @@ class EditorProvider extends ChangeNotifier {
     return dirtyKept;
   }
 
+  /// Index of an already-open tab bound to the same physical file as [path],
+  /// or -1. Uses canonical comparison so Windows case/separator variants of
+  /// one file can never produce two tabs (two tabs on one file auto-save over
+  /// each other, last writer wins, with no conflict warning).
+  int _indexOfOpenPath(String path) {
+    final canonical = canonicalPath(path);
+    return _tabs.indexWhere(
+        (t) => t.filePath != null && canonicalPath(t.filePath!) == canonical);
+  }
+
   // File operations
   Future<void> openFile(String path) async {
     // Check if already open
-    final existingIndex = _tabs.indexWhere((t) => t.filePath == path);
+    final existingIndex = _indexOfOpenPath(path);
     if (existingIndex != -1) {
       _activeTabIndex = existingIndex;
       notifyListeners();
@@ -613,12 +758,37 @@ class EditorProvider extends ChangeNotifier {
       throw ScribNeedsPasswordException(path, fileName);
     }
 
-    // Plain text file
+    // Plain text file. Detect a scrib_rich envelope (written by older builds
+    // whose save paths sent rich content to .txt files verbatim) and hydrate
+    // a rich tab, exactly like openScrbFile — this transparently recovers
+    // files already written that way instead of showing the user raw JSON.
     final content = await _fileService.readTxtFile(path);
+    EditorMode mode = EditorMode.plainText;
+    String plainContent = content;
+    String deltaJson = '';
+    if (content.startsWith(scribRichPrefix)) {
+      try {
+        final parsed = jsonDecode(content) as Map<String, dynamic>;
+        final rich = parsed['scrib_rich'];
+        if (rich is List) {
+          deltaJson = jsonEncode(rich);
+          plainContent = _extractPlainTextFromDelta(deltaJson);
+          mode = EditorMode.richText;
+        }
+      } catch (_) {
+        // Not a valid envelope after all — treat as ordinary plain text.
+        mode = EditorMode.plainText;
+        plainContent = content;
+        deltaJson = '';
+      }
+    }
     final tab = EditorTab(
       filePath: path,
       fileName: fileName,
-      content: content,
+      content: plainContent,
+      mode: mode,
+      deltaJson: deltaJson,
+      savedDeltaJson: deltaJson,
       tabFontFamily: _settingsService.fontFamily,
       tabFontSize: _settingsService.fontSize,
     );
@@ -627,22 +797,26 @@ class EditorProvider extends ChangeNotifier {
     if (_tabs.length == 1 && activeTab != null &&
         activeTab!.filePath == null && !activeTab!.isDirty &&
         activeTab!.controller.text.isEmpty) {
-      _tabs[0].dispose();
+      // Deferred disposal (closeTab's pattern): a synchronous dispose fires
+      // controller notifications mid-update. The replaced tab is empty and
+      // untitled, so nothing sensitive waits on the microtask.
+      final replaced = _tabs[0];
       _tabs[0] = tab;
+      Future.microtask(replaced.dispose);
     } else {
       _tabs.add(tab);
       _activeTabIndex = _tabs.length - 1;
     }
 
     await _settingsService.addRecentFile(path);
-    _cachedActiveText = null;
+    _invalidateActiveText();
     notifyListeners();
   }
 
   /// Open a .rtf file (already parsed to Delta JSON by caller)
   Future<void> openRtfFile(String path, String deltaJson) async {
     // Check if already open
-    final existingIndex = _tabs.indexWhere((t) => t.filePath == path);
+    final existingIndex = _indexOfOpenPath(path);
     if (existingIndex != -1) {
       _activeTabIndex = existingIndex;
       notifyListeners();
@@ -667,15 +841,19 @@ class EditorProvider extends ChangeNotifier {
     if (_tabs.length == 1 && activeTab != null &&
         activeTab!.filePath == null && !activeTab!.isDirty &&
         activeTab!.controller.text.isEmpty) {
-      _tabs[0].dispose();
+      // Deferred disposal (closeTab's pattern): a synchronous dispose fires
+      // controller notifications mid-update. The replaced tab is empty and
+      // untitled, so nothing sensitive waits on the microtask.
+      final replaced = _tabs[0];
       _tabs[0] = tab;
+      Future.microtask(replaced.dispose);
     } else {
       _tabs.add(tab);
       _activeTabIndex = _tabs.length - 1;
     }
 
     await _settingsService.addRecentFile(path);
-    _cachedActiveText = null;
+    _invalidateActiveText();
     notifyListeners();
   }
 
@@ -704,9 +882,20 @@ class EditorProvider extends ChangeNotifier {
     }
 
     // Find existing placeholder tab or create new
-    final existingIndex = _tabs.indexWhere((t) => t.filePath == path);
+    final existingIndex = _indexOfOpenPath(path);
     if (existingIndex != -1) {
       final tab = _tabs[existingIndex];
+      // An unlocked tab with unsaved edits must never be silently reloaded
+      // from disk: re-opening the same file (Recent Files, Open, drag-drop)
+      // would discard everything typed since the last save. Activate it and
+      // keep the in-memory state. Locked placeholders are never dirty (lock()
+      // wipes all content), so the unlock flow still refreshes below.
+      if (!tab.isLocked && tab.isDirty) {
+        _activeTabIndex = existingIndex;
+        _invalidateActiveText();
+        notifyListeners();
+        return true;
+      }
       tab.controller.text = plainContent;
       tab.savedContent = plainContent;
       // The file on disk is encrypted — the tab MUST be flagged encrypted, or a
@@ -736,9 +925,13 @@ class EditorProvider extends ChangeNotifier {
       if (_tabs.length == 1 && activeTab != null &&
           activeTab!.filePath == null && !activeTab!.isDirty &&
           activeTab!.controller.text.isEmpty) {
-        _tabs[0].dispose();
+        // Deferred disposal (closeTab's pattern): a synchronous dispose fires
+        // controller notifications mid-update. The replaced tab is empty and
+        // untitled, so nothing sensitive waits on the microtask.
+        final replaced = _tabs[0];
         _tabs[0] = tab;
         _activeTabIndex = 0;
+        Future.microtask(replaced.dispose);
       } else {
         _tabs.add(tab);
         _activeTabIndex = _tabs.length - 1;
@@ -746,12 +939,16 @@ class EditorProvider extends ChangeNotifier {
     }
 
     await _settingsService.addRecentFile(path);
-    _cachedActiveText = null;
+    _invalidateActiveText();
     notifyListeners();
     return true;
   }
 
-  /// Save the active tab
+  /// Save the active tab in place. Delegates to [_saveTabToDisk] so every
+  /// caller gets the same refusal + extension-aware routing as auto-save
+  /// (an extension-blind write here previously let the close-tab Save flow
+  /// put plaintext into a .scrb and the scrib_rich envelope into a .rtf).
+  /// Returns false when the tab needs Save As or the write was refused.
   Future<bool> saveActiveTab() async {
     final tab = activeTab;
     if (tab == null || tab.isLocked) return false;
@@ -760,13 +957,7 @@ class EditorProvider extends ChangeNotifier {
       return false; // Need "Save As" - caller should handle
     }
 
-    final content = tab.getSaveContent();
-
-    if (tab.isEncrypted && tab.password != null) {
-      await _fileService.writeScrbFile(tab.filePath!, content, tab.password!);
-    } else {
-      await _fileService.writeTxtFile(tab.filePath!, content);
-    }
+    if (!await _saveTabToDisk(tab)) return false;
     tab.markSaved();
     notifyListeners();
     return true;
@@ -804,7 +995,10 @@ class EditorProvider extends ChangeNotifier {
   /// notifying listeners keeps the UI snappy on save.
   void markTabSavedAs(String path) {
     final tab = activeTab;
-    if (tab == null) return;
+    // The isLocked guard keeps the "every save path refuses locked tabs"
+    // invariant local: without it, a caller reaching this on a locked tab
+    // would silently convert it into an "unencrypted, saved" tab.
+    if (tab == null || tab.isLocked) return;
     tab.filePath = path;
     tab.fileName = _fileService.getFileName(path);
     tab.isEncrypted = false;
@@ -881,7 +1075,7 @@ class EditorProvider extends ChangeNotifier {
       tab.mode = EditorMode.plainText;
     }
 
-    _cachedActiveText = null;
+    _invalidateActiveText();
     notifyListeners();
   }
 
@@ -892,7 +1086,7 @@ class EditorProvider extends ChangeNotifier {
     final snap = tab.preToggleSnapshot;
     if (snap == null) return false;
     tab.applySnapshot(snap);
-    _cachedActiveText = null;
+    _invalidateActiveText();
     notifyListeners();
     return true;
   }
@@ -901,6 +1095,12 @@ class EditorProvider extends ChangeNotifier {
   void updateDeltaJson(String json) {
     final tab = activeTab;
     if (tab == null || tab.isLocked) return;
+    // The Quill controller notifies on selection-only changes too (every
+    // cursor move / click). When the serialized document is unchanged there
+    // is nothing to store, so skip the cache invalidation and the debounced
+    // notify: word/char/line counts must not be recomputed and the whole
+    // listener tree must not rebuild just because the caret moved.
+    if (json == tab.deltaJson) return;
     tab.deltaJson = json;
     // Debounced notify for dirty indicator
     onContentChanged();
@@ -1013,34 +1213,11 @@ class EditorProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Search all open tabs. Returns results sorted by match count (desc).
-  List<({int tabIndex, String tabName, int matchCount})> searchAllTabs(String query) {
-    if (query.trim().isEmpty) return [];
-    final q = query.toLowerCase();
-    final results = <({int tabIndex, String tabName, int matchCount})>[];
-    for (int i = 0; i < _tabs.length; i++) {
-      final tab = _tabs[i];
-      final text = tab.mode == EditorMode.richText
-          ? _extractPlainTextFromDelta(tab.deltaJson)
-          : tab.controller.text;
-      int count = 0;
-      int idx = 0;
-      final lower = text.toLowerCase();
-      while ((idx = lower.indexOf(q, idx)) != -1) {
-        count++;
-        idx += q.length;
-      }
-      if (count > 0) results.add((tabIndex: i, tabName: tab.displayName, matchCount: count));
-    }
-    results.sort((a, b) => b.matchCount.compareTo(a.matchCount));
-    return results;
-  }
-
   /// Debounced content-change handler. Invalidates cached text and notifies.
   void onContentChanged() {
     _contentDebounce?.cancel();
     _contentDebounce = Timer(_debounceDuration, () {
-      _cachedActiveText = null;
+      _invalidateActiveText();
       notifyListeners();
     });
   }
@@ -1049,7 +1226,7 @@ class EditorProvider extends ChangeNotifier {
   /// Used after operations that directly mutate controller text (replace-all)
   /// so word/char/line counts don't lag behind the visible content.
   void invalidateTextCache() {
-    _cachedActiveText = null;
+    _invalidateActiveText();
     _contentDebounce?.cancel();
     notifyListeners();
   }
@@ -1059,24 +1236,60 @@ class EditorProvider extends ChangeNotifier {
     final tab = activeTab;
     if (tab == null) return _cachedActiveText = '';
     if (tab.mode == EditorMode.richText) {
-      return _cachedActiveText = _extractPlainTextFromDelta(tab.deltaJson);
+      // Table-aware extraction: cell text participates in counts and search
+      // (an image contributes a single space so it never fuses two words).
+      return _cachedActiveText = extractSearchableDeltaText(tab.deltaJson);
     }
     return _cachedActiveText = tab.controller.text;
   }
 
-  int get wordCount {
-    final text = _activeText;
-    if (text.trim().isEmpty) return 0;
-    return RegExp(r'\S+').allMatches(text).length;
+  ({int words, int chars, int lines}) get _counts =>
+      _cachedCounts ??= computeTextCounts(_activeText);
+
+  /// Single pass over [text]: counts runs of non-whitespace (words), total
+  /// length (chars) and newlines + 1 (lines). The whitespace class mirrors
+  /// RegExp's \s, so the numbers are identical to the previous
+  /// RegExp(r'\S+') / '\n'.allMatches implementations without allocating a
+  /// Match object per word on every status-bar rebuild.
+  @visibleForTesting
+  static ({int words, int chars, int lines}) computeTextCounts(String text) {
+    if (text.isEmpty) return (words: 0, chars: 0, lines: 1);
+    var words = 0;
+    var lines = 1;
+    var inWord = false;
+    for (var i = 0; i < text.length; i++) {
+      final c = text.codeUnitAt(i);
+      if (c == 0x0A) lines++;
+      if (_isCountWhitespace(c)) {
+        inWord = false;
+      } else if (!inWord) {
+        inWord = true;
+        words++;
+      }
+    }
+    return (words: words, chars: text.length, lines: lines);
   }
 
-  int get charCount => _activeText.length;
+  /// ECMAScript \s (the class RegExp(r'\S+') negates): ASCII whitespace,
+  /// line/paragraph separators, and the Unicode Zs space separators.
+  static bool _isCountWhitespace(int c) =>
+      (c >= 0x09 && c <= 0x0D) ||
+      c == 0x20 ||
+      c == 0xA0 ||
+      c == 0x1680 ||
+      (c >= 0x2000 && c <= 0x200A) ||
+      c == 0x2028 ||
+      c == 0x2029 ||
+      c == 0x202F ||
+      c == 0x205F ||
+      c == 0x3000 ||
+      c == 0xFEFF;
 
-  int get lineCount {
-    final text = _activeText;
-    if (text.isEmpty) return 1;
-    return '\n'.allMatches(text).length + 1;
-  }
+  int get wordCount => _counts.words;
+
+  int get charCount => _counts.chars;
+
+  int get lineCount => _counts.lines;
 
   /// Plain text content of the active tab for searching.
   /// Works in both plain text and rich text mode.

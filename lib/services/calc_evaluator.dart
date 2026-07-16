@@ -11,8 +11,10 @@
 ///   unary  := ('+' | '-') unary | primary
 ///   primary:= number | '(' expr ')'
 ///
-/// Numbers may be integers or decimals (`12`, `3.14`, `.5`). Whitespace and
-/// thousands separators (`,` and `_`) are ignored.
+/// Numbers may be integers, decimals, or scientific notation (`12`, `3.14`,
+/// `.5`, `1e+21`, `2.5e-3`). Whitespace and thousands separators (`,` and `_`)
+/// are ignored. Parse depth is capped so pathological nesting raises a
+/// [CalcException] instead of overflowing the stack.
 library;
 
 import 'dart:math' as math;
@@ -133,7 +135,7 @@ class CalcEvaluator {
     _skipWs();
     if (_peek() == '^') {
       _pos++;
-      final exponent = _power(); // right-associative
+      final exponent = _guard(_power); // right-associative
       final result = _pow(base, exponent);
       if (result.isNaN) throw CalcException('Undefined result');
       return result;
@@ -141,19 +143,41 @@ class CalcEvaluator {
     return base;
   }
 
-  double _unary() {
-    _skipWs();
-    final c = _peek();
-    if (c == '-') {
-      _pos++;
-      return -_unary();
+  /// Parse depth cap: pasted garbage like '(' * 20000 or a 20000-long '^'
+  /// chain raises a CalcException instead of a StackOverflowError, which
+  /// callers that only catch CalcException could not survive. Guarding
+  /// [_unary] bounds the parenthesis cycle (_primary -> _expr -> ... ->
+  /// _unary) and chained unary signs; the '^' right-recursion in [_power]
+  /// happens after its _unary call has already unwound, so it is guarded
+  /// separately at the call site.
+  static const int _maxDepth = 500;
+  int _depth = 0;
+
+  double _guard(double Function() body) {
+    _depth++;
+    if (_depth > _maxDepth) {
+      throw CalcException('Expression is too deeply nested');
     }
-    if (c == '+') {
-      _pos++;
-      return _unary();
+    try {
+      return body();
+    } finally {
+      _depth--;
     }
-    return _primary();
   }
+
+  double _unary() => _guard(() {
+        _skipWs();
+        final c = _peek();
+        if (c == '-') {
+          _pos++;
+          return -_unary();
+        }
+        if (c == '+') {
+          _pos++;
+          return _unary();
+        }
+        return _primary();
+      });
 
   double _primary() {
     _skipWs();
@@ -196,6 +220,28 @@ class CalcEvaluator {
     if (!sawDigit) {
       if (_pos >= _src.length) throw CalcException('Unexpected end');
       throw CalcException('Unexpected "${_src[_pos]}"');
+    }
+    // Optional exponent (scientific notation): 'e' or 'E', an optional sign,
+    // then at least one digit (1e21, 1e+21, 2.5e-3). The '=' key and history
+    // taps feed formatResult output back into the input, so the parser must
+    // accept everything formatResult can emit. A dangling 'e' ("2e", "2e+")
+    // is left unconsumed and stays an error, exactly as before.
+    if (_pos < _src.length && (_src[_pos] == 'e' || _src[_pos] == 'E')) {
+      var look = _pos + 1;
+      var sign = '';
+      if (look < _src.length && (_src[look] == '+' || _src[look] == '-')) {
+        sign = _src[look];
+        look++;
+      }
+      if (look < _src.length && _isDigit(_src[look])) {
+        sb.write('e');
+        sb.write(sign);
+        _pos = look;
+        while (_pos < _src.length && _isDigit(_src[_pos])) {
+          sb.write(_src[_pos]);
+          _pos++;
+        }
+      }
     }
     final text = sb.toString();
     final value = double.tryParse(text);

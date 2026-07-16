@@ -105,6 +105,106 @@ void main() {
       expect(ScribTable.fromData(42), isNull);
     });
 
+    test('fromData rejects zero and negative dimensions', () {
+      expect(
+          ScribTable.fromData({'rows': 0, 'cols': 2, 'id': 'z', 'cells': []}),
+          isNull);
+      expect(
+          ScribTable.fromData({'rows': 2, 'cols': 0, 'id': 'z', 'cells': []}),
+          isNull);
+      expect(
+          ScribTable.fromData({'rows': -1, 'cols': 3, 'id': 'n', 'cells': []}),
+          isNull);
+      expect(
+          ScribTable.fromData({'rows': 3, 'cols': -5, 'id': 'n', 'cells': []}),
+          isNull);
+    });
+
+    test('fromData rejects missing or non-numeric dimensions', () {
+      expect(ScribTable.fromData({'id': 'x', 'cells': []}), isNull);
+      expect(
+          ScribTable.fromData({'rows': 2, 'id': 'x', 'cells': []}), isNull);
+      expect(
+          ScribTable.fromData({'cols': 2, 'id': 'x', 'cells': []}), isNull);
+      expect(
+          ScribTable.fromData(
+              {'rows': 'two', 'cols': 2, 'id': 'x', 'cells': []}),
+          isNull);
+      expect(
+          ScribTable.fromData(
+              {'rows': null, 'cols': 2, 'id': 'x', 'cells': []}),
+          isNull);
+    });
+
+    test('fromData with a missing cells key yields a blank grid', () {
+      final t = ScribTable.fromData({'rows': 2, 'cols': 2, 'id': 'b'})!;
+      expect(t.rows, 2);
+      expect(t.cols, 2);
+      expect(t.cellAt(0, 0), '');
+      expect(t.cellAt(1, 1), '');
+    });
+
+    test('fromData rejects a non-list cells value', () {
+      expect(
+          ScribTable.fromData(
+              {'rows': 1, 'cols': 1, 'id': 'x', 'cells': 'garbage'}),
+          isNull);
+      expect(
+          ScribTable.fromData(
+              {'rows': 1, 'cols': 1, 'id': 'x', 'cells': {'k': 'v'}}),
+          isNull);
+    });
+
+    test('fromData pads a non-list row without discarding the other rows', () {
+      final t = ScribTable.fromData({
+        'rows': 3,
+        'cols': 2,
+        'id': 'mix',
+        'cells': [
+          ['keep', 'me'],
+          'not a list',
+          ['also', 'kept'],
+        ],
+      })!;
+      expect(t.cellAt(0, 0), 'keep');
+      expect(t.cellAt(1, 0), '');
+      expect(t.cellAt(1, 1), '');
+      expect(t.cellAt(2, 1), 'kept');
+    });
+
+    test('fromData stringifies non-string cell values and blanks nulls', () {
+      final t = ScribTable.fromData({
+        'rows': 1,
+        'cols': 3,
+        'id': 'v',
+        'cells': [
+          [42, null, true],
+        ],
+      })!;
+      expect(t.cellAt(0, 0), '42');
+      expect(t.cellAt(0, 1), '');
+      expect(t.cellAt(0, 2), 'true');
+    });
+
+    test('fromCustomEmbedData handles null, non-map, and missing type', () {
+      expect(ScribTable.fromCustomEmbedData(null), isNull);
+      expect(ScribTable.fromCustomEmbedData('[1,2]'), isNull);
+      expect(ScribTable.fromCustomEmbedData('not json'), isNull);
+      expect(ScribTable.fromCustomEmbedData('{"other-embed": {}}'), isNull);
+      expect(ScribTable.fromCustomEmbedData(42), isNull);
+    });
+
+    test('fromCustomEmbedData parses both String and Map payloads', () {
+      final t = ScribTable.empty(rows: 1, cols: 1, id: 'c').withCell(0, 0, 'x');
+      final asString = jsonEncode({ScribTable.kType: t.toData()});
+      final fromString = ScribTable.fromCustomEmbedData(asString)!;
+      expect(fromString.contentEquals(t), isTrue);
+
+      final asMap = {ScribTable.kType: t.toData()};
+      final fromMap = ScribTable.fromCustomEmbedData(asMap)!;
+      expect(fromMap.contentEquals(t), isTrue);
+    });
+
     test('fromData clamps hostile dimensions before allocating cells', () {
       // Regression: dimensions must be clamped BEFORE the cell loop, or a
       // corrupt/hostile embed with huge rows/cols would freeze or OOM on load.

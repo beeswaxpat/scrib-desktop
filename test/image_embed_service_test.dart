@@ -74,6 +74,33 @@ void main() {
     test('returns null for a malformed data URI', () {
       expect(ImageEmbedService.decodeDataUri('data:image/png;base64'), isNull);
     });
+
+    test('returns null for invalid base64 payloads', () {
+      expect(
+          ImageEmbedService.decodeDataUri('data:image/png;base64,!!!***!!!'),
+          isNull);
+      expect(
+          ImageEmbedService.decodeDataUri('data:image/png;base64,AA=A'),
+          isNull);
+    });
+
+    test('returns null for an empty payload', () {
+      expect(ImageEmbedService.decodeDataUri('data:image/png;base64,'), isNull);
+    });
+
+    test('returns null when the header lacks base64', () {
+      expect(ImageEmbedService.decodeDataUri('data:image/png,rawtext'), isNull);
+      expect(ImageEmbedService.decodeDataUri('data:,plain'), isNull);
+    });
+
+    test('cached variant refuses the same invalid payloads', () {
+      ImageEmbedService.clearDecodeCache();
+      expect(
+          ImageEmbedService.decodeDataUriCached('data:image/png;base64,!!!'),
+          isNull);
+      expect(ImageEmbedService.decodeDataUriCached('data:image/png;base64,'),
+          isNull);
+    });
   });
 
   test('an image embed survives a .scrb encrypt/decrypt round-trip', () async {

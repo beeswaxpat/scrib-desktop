@@ -112,31 +112,10 @@ void main() {
     });
   });
 
-  group('global search', () {
-    test('returns tabs sorted by match count descending', () {
-      editor.activeTab!.controller.text = 'apple pie';
-      editor.addNewTab();
-      editor.activeTab!.controller.text = 'apple apple apple';
-      editor.addNewTab();
-      editor.activeTab!.controller.text = 'orange';
-
-      final results = editor.searchAllTabs('apple');
-      expect(results.length, 2);
-      expect(results[0].matchCount, 3);
-      expect(results[1].matchCount, 1);
-    });
-
-    test('empty query returns no results', () {
-      expect(editor.searchAllTabs(''), isEmpty);
-      expect(editor.searchAllTabs('   '), isEmpty);
-    });
-
-    test('case-insensitive match', () {
-      editor.activeTab!.controller.text = 'Hello HELLO hello';
-      final results = editor.searchAllTabs('hello');
-      expect(results.first.matchCount, 3);
-    });
-  });
+  // Global search behavior (sorting, case-insensitivity, empty query, table
+  // cell text) is tested at the widget level in global_search_widget_test.dart:
+  // the search-all-tabs logic lives in GlobalSearchPanel since the provider's
+  // orphaned searchAllTabs helper was removed.
 
   group('stats', () {
     test('word count ignores multiple spaces', () {

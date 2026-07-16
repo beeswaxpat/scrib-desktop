@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../dialogs/confirm_dialog.dart';
 import '../providers/editor_provider.dart';
 import '../services/settings_service.dart';
+import '../theme/scrib_colors.dart';
 import '../constants.dart';
 
 /// Quick-action toolbar with file ops, encrypt, find, font controls, colors, theme.
@@ -80,7 +81,7 @@ class ScribToolbar extends StatelessWidget {
             tooltip: isEncrypted ? 'Decrypt (Ctrl+E)' : 'Encrypt (Ctrl+E)',
             onPressed: hasTab ? onToggleEncryption : null,
             isDark: isDark,
-            activeColor: isEncrypted ? const Color(0xFFFBBF24) : null,
+            activeColor: isEncrypted ? context.scribColors.encryptionLock : null,
           ),
           // Find (current tab) — Ctrl+F
           _ToolbarButton(
@@ -254,8 +255,15 @@ class ScribToolbar extends StatelessWidget {
                       decoration: BoxDecoration(
                         color: accentColors[i],
                         shape: BoxShape.circle,
+                        // Theme-aware selection ring: white is invisible on
+                        // the light #F0F0F0 toolbar.
                         border: isSelected
-                            ? Border.all(color: Colors.white, width: 2)
+                            ? Border.all(
+                                color: isDark
+                                    ? Colors.white
+                                    : const Color(0xFF1A1A1A),
+                                width: 2,
+                              )
                             : null,
                       ),
                     ),

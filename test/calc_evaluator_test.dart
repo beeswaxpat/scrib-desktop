@@ -132,4 +132,97 @@ void main() {
       expect(double.parse(CalcEvaluator.tryEvalToString('10 ^ 30')!), 1e30);
     });
   });
+
+  group('scientific notation input', () {
+    test('e-notation numbers parse', () {
+      expect(eval('1e21'), 1e21);
+      expect(eval('1e+21'), 1e21);
+      expect(eval('2.5e-3'), closeTo(0.0025, 1e-15));
+      expect(eval('1E6'), 1e6);
+      expect(eval('.5e3'), 500);
+    });
+
+    test('e-notation participates in arithmetic', () {
+      expect(eval('1e3 + 1'), 1001);
+      expect(eval('2 * 1e-1'), closeTo(0.2, 1e-12));
+      expect(eval('-1e+21'), -1e21);
+    });
+
+    test('bare or dangling e is still rejected', () {
+      expect(() => eval('e5'), throwsA(isA<CalcException>()));
+      expect(() => eval('2e'), throwsA(isA<CalcException>()));
+      expect(() => eval('2e+'), throwsA(isA<CalcException>()));
+      expect(() => eval('2e-'), throwsA(isA<CalcException>()));
+    });
+
+    test('every result the calculator can display is re-parseable (= chains)', () {
+      // Regression: the '=' key and history taps feed formatResult output back
+      // into the input field, so eval must round-trip formatResult. Before the
+      // exponent fix, '9 ^ 22' then '=' produced '9.84770902184e+20' and the
+      // calculator rejected its own result with 'Unexpected "e"'.
+      const exprs = [
+        '9 ^ 22',
+        '10 ^ 30',
+        '1 / 3',
+        '2 ^ -40',
+        '-(10 ^ 25)',
+        '0.1 + 0.2',
+        '2 + 2',
+      ];
+      for (final expr in exprs) {
+        final shown = CalcEvaluator.formatResult(CalcEvaluator.eval(expr));
+        final rechained = CalcEvaluator.tryEvalToString(shown);
+        expect(rechained, shown, reason: '$expr displays "$shown" which must re-parse to itself');
+      }
+    });
+  });
+
+  group('power edge cases', () {
+    test('fractional power of a negative base throws CalcException, not NaN', () {
+      expect(() => eval('(-8) ^ 0.5'), throwsA(isA<CalcException>()));
+      expect(CalcEvaluator.tryEvalToString('(-8) ^ 0.5'), isNull);
+    });
+
+    test('negative exponent works', () {
+      expect(eval('2 ^ -2'), 0.25);
+    });
+
+    test('0 ^ 0 evaluates to 1 (pinned)', () {
+      expect(eval('0 ^ 0'), 1);
+    });
+
+    test('infinite results are rejected at format time, never displayed', () {
+      expect(() => CalcEvaluator.formatResult(CalcEvaluator.eval('10 ^ 999')),
+          throwsA(isA<CalcException>()));
+      expect(CalcEvaluator.tryEvalToString('10 ^ 999'), isNull);
+    });
+  });
+
+  group('deep nesting robustness', () {
+    test('pathological parens throw CalcException, not StackOverflowError', () {
+      final deep = '${'(' * 20000}1${')' * 20000}';
+      expect(() => eval(deep), throwsA(isA<CalcException>()));
+      expect(CalcEvaluator.tryEvalToString(deep), isNull);
+    });
+
+    test('long chains of unary signs are bounded', () {
+      expect(() => eval('${'-' * 20000}1'), throwsA(isA<CalcException>()));
+    });
+
+    test('long chains of ^ are bounded', () {
+      expect(() => eval(List.filled(20000, '2').join('^')),
+          throwsA(isA<CalcException>()));
+    });
+
+    test('reasonable nesting still works', () {
+      expect(eval('${'(' * 100}7${')' * 100}'), 7);
+      expect(eval('---5'), -5);
+    });
+
+    test('long flat expressions are not depth-limited', () {
+      // The depth counter must unwind between terms: 2000 additions in a row
+      // never nest, so they must not trip the cap.
+      expect(eval(List.filled(2000, '1').join('+')), 2000);
+    });
+  });
 }

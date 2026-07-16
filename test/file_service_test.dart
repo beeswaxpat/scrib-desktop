@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:scrib_desktop/constants.dart';
+import 'package:scrib_desktop/services/atomic_write.dart';
 import 'package:scrib_desktop/services/file_service.dart';
 
 /// Tests for the .scrb v2 file format and plaintext .txt I/O.
@@ -209,6 +210,32 @@ void main() {
         () => fs.readTxtFile(path('does-not-exist.txt')),
         throwsA(isA<ScribFileReadException>()),
       );
+    });
+  });
+
+  group('lazy crash repair on read', () {
+    test('readTxtFile restores a stranded .scrib-bak before reading', () async {
+      final p = path('stranded.txt');
+      await File('$p${AtomicWrite.bakSuffix}').writeAsString('recovered body');
+      expect(await fs.readTxtFile(p), 'recovered body');
+      expect(await File(p).exists(), isTrue);
+      expect(await File('$p${AtomicWrite.bakSuffix}').exists(), isFalse);
+    });
+
+    test('readScrbFile restores a stranded encrypted .scrib-bak and decrypts it', () async {
+      final p = path('stranded.scrb');
+      await fs.writeScrbFile(p, 'survived the crash', 'pw', iterations: 1000);
+      // Simulate a crash mid-fallback-rename: content sits at the backup path,
+      // primary is gone.
+      await File(p).rename('$p${AtomicWrite.bakSuffix}');
+      expect(await fs.readScrbFile(p, 'pw'), 'survived the crash');
+    });
+
+    test('readRtfFile restores a stranded .scrib-bak before reading', () async {
+      final p = path('stranded.rtf');
+      await File('$p${AtomicWrite.bakSuffix}')
+          .writeAsString(r'{\rtf1\ansi\deff0 rescued\par}');
+      expect(await fs.readRtfFile(p), contains('rescued'));
     });
   });
 

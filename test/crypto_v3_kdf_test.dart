@@ -94,6 +94,39 @@ void main() {
     expect(await fs.readScrbFile(p, 'old-pass'), isNull);
   });
 
+  test('a crafted v3 header demanding 100,000,000 PBKDF2 iterations is '
+      'rejected before any key derivation runs', () async {
+    // At the measured ~0.85s per 100k iterations, deriving at 1e8 would take
+    // roughly 14 minutes. The cap check must reject the header first — if it
+    // ever regresses, this test times out instead of passing slowly.
+    final p = path('hostile.scrb');
+    await File(p).writeAsBytes(_buildV3Header(iterations: 100000000));
+    final sw = Stopwatch()..start();
+    expect(await fs.readScrbFile(p, 'any-password'), isNull);
+    sw.stop();
+    expect(sw.elapsed.inSeconds, lessThan(10),
+        reason: 'rejection must happen without running the KDF');
+  });
+
+  test('an iteration count just above scrbMaxIterations is rejected', () async {
+    final p = path('overcap.scrb');
+    await File(p).writeAsBytes(_buildV3Header(iterations: scrbMaxIterations + 1));
+    expect(await fs.readScrbFile(p, 'pw'), isNull);
+  });
+
+  test('an iteration count of zero is rejected', () async {
+    final p = path('zeroiter.scrb');
+    await File(p).writeAsBytes(_buildV3Header(iterations: 0));
+    expect(await fs.readScrbFile(p, 'pw'), isNull);
+  });
+
+  test('the write-side default sits well inside the DoS cap', () {
+    expect(scrbV3DefaultIterations, lessThanOrEqualTo(scrbMaxIterations));
+    expect(scrbMaxIterations, 2000000,
+        reason: 'raising the cap re-opens the decrypt-freeze DoS; see the '
+            'constant doc before changing it');
+  });
+
   test('v2 and v3 files of the same content carry different version bytes', () async {
     final v2p = path('v2.scrb');
     final v3p = path('v3.scrb');
@@ -106,6 +139,27 @@ void main() {
     expect(await fs.readScrbFile(v2p, 'pw'), 'same content');
     expect(await fs.readScrbFile(v3p, 'pw'), 'same content');
   });
+}
+
+/// Builds a syntactically valid v3 file whose header demands [iterations].
+/// The HMAC is garbage — irrelevant, because iteration-bound rejection must
+/// happen BEFORE the (KDF-dependent) HMAC check can even run.
+Uint8List _buildV3Header({required int iterations}) {
+  final b = BytesBuilder()
+    ..add(scrbMagic)
+    ..addByte(scrbVersionV3)
+    ..addByte(scrbKdfPbkdf2Sha256)
+    ..add([
+      (iterations >> 24) & 0xFF,
+      (iterations >> 16) & 0xFF,
+      (iterations >> 8) & 0xFF,
+      iterations & 0xFF,
+    ])
+    ..add(Uint8List(16)) // IV
+    ..add(Uint8List(32)) // salt
+    ..add(Uint8List(32)) // HMAC
+    ..add(Uint8List(16)); // one block of "ciphertext"
+  return b.toBytes();
 }
 
 /// Reproduces the historic v2 on-disk format:

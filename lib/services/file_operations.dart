@@ -51,11 +51,17 @@ class FileOperations {
   /// routing "needs a password" and "needs save-as" cases via [needsPassword]
   /// and [needsSaveAs] on the result.
   ///
-  /// Handles the encryption-toggle extension swap (.scrb ↔ .txt/.rtf) and
-  /// returns `extensionChanged: true` so the UI can notify the user.
+  /// Handles the encryption-toggle extension swap (.scrb ↔ .txt/.rtf) and the
+  /// mode-toggle format swap (.txt ↔ .rtf), returning `extensionChanged: true`
+  /// so the UI can notify the user.
+  ///
+  /// [confirmLossyRtf] is asked before any Delta→RTF write whose Delta carries
+  /// image/table embeds, because RTF conversion drops them. Return false (or
+  /// pass null) to cancel that write; the tab then stays dirty.
   Future<SaveResult> saveActive(
     EditorProvider editor, {
     required String? passwordForNewEncryption,
+    Future<bool> Function()? confirmLossyRtf,
   }) async {
     final tab = editor.activeTab;
     if (tab == null) return SaveResult.failure('No active tab');
@@ -67,6 +73,15 @@ class FileOperations {
     final currentPath = tab.filePath!;
     final isRtfOnDisk = currentPath.toLowerCase().endsWith('.rtf');
     final isScrbOnDisk = currentPath.toLowerCase().endsWith('.scrb');
+    final isRichWithDelta =
+        tab.mode == EditorMode.richText && tab.deltaJson.isNotEmpty;
+
+    // Any Delta→RTF conversion silently drops image/table embeds, whose bytes
+    // live only inside the Delta. Never do that without the user's say-so.
+    Future<bool> rtfWriteAllowed() async {
+      if (!deltaHasEmbeds(tab.deltaJson)) return true;
+      return confirmLossyRtf != null && await confirmLossyRtf();
+    }
 
     try {
       // Case A: tab switched to encrypted, but file on disk is .txt/.rtf
@@ -77,8 +92,11 @@ class FileOperations {
           return SaveResult.failure('Password required');
         }
         tab.password ??= passwordForNewEncryption;
-        await editor.saveActiveTabAs(newPath,
+        final wrote = await editor.saveActiveTabAs(newPath,
             encrypted: true, password: tab.password);
+        // The refusal (locked mid-flow) must not fall through to deleting the
+        // plaintext original of a file that was never encrypted.
+        if (!wrote) return SaveResult.failure('Tab is locked');
         // Remove the now-orphaned plaintext original — leaving it on disk would
         // defeat the point of encrypting.
         final removed = await _deleteOldFile(currentPath, newPath);
@@ -98,16 +116,42 @@ class FileOperations {
         final newExt = tab.mode == EditorMode.richText ? '.rtf' : '.txt';
         final newPath = _swapExtension(currentPath, newExt);
         if (newExt == '.rtf' && tab.deltaJson.isNotEmpty) {
+          if (!await rtfWriteAllowed()) return SaveResult.failure('Cancelled');
           final rtf = RtfService.deltaToRtf(tab.deltaJson);
           await _fileService.writeRtfFile(newPath, rtf);
           editor.markTabSavedAs(newPath);
         } else {
-          await editor.saveActiveTabAs(newPath);
+          final wrote = await editor.saveActiveTabAs(newPath);
+          if (!wrote) return SaveResult.failure('Tab is locked');
         }
         // Remove the now-orphaned encrypted original so a stale .scrb does not
         // linger alongside the decrypted file.
         await _deleteOldFile(currentPath, newPath);
         return SaveResult.success(newPath: newPath, extensionChanged: true);
+      }
+
+      // Case B2: editor mode no longer matches the on-disk format.
+      // A rich-text tab over a plain file would write the scrib_rich envelope
+      // into it (JSON garbage in every other editor); a plain-mode tab over a
+      // .rtf would write a headerless file Word/WordPad reject. Swap the
+      // extension, mirroring the encryption-toggle cases above.
+      if (!tab.isEncrypted && !isScrbOnDisk) {
+        if (isRichWithDelta && !isRtfOnDisk) {
+          if (!await rtfWriteAllowed()) return SaveResult.failure('Cancelled');
+          final newPath = _swapExtension(currentPath, '.rtf');
+          final rtf = RtfService.deltaToRtf(tab.deltaJson);
+          await _fileService.writeRtfFile(newPath, rtf);
+          editor.markTabSavedAs(newPath);
+          await _deleteOldFile(currentPath, newPath);
+          return SaveResult.success(newPath: newPath, extensionChanged: true);
+        }
+        if (!isRichWithDelta && isRtfOnDisk) {
+          final newPath = _swapExtension(currentPath, '.txt');
+          final wrote = await editor.saveActiveTabAs(newPath);
+          if (!wrote) return SaveResult.failure('Tab is locked');
+          await _deleteOldFile(currentPath, newPath);
+          return SaveResult.success(newPath: newPath, extensionChanged: true);
+        }
       }
 
       // Case C: encrypted save to same path — password still required.
@@ -119,13 +163,15 @@ class FileOperations {
       }
 
       // Case D: in-place save. RTF gets Delta→RTF conversion first.
-      if (isRtfOnDisk && tab.mode == EditorMode.richText && tab.deltaJson.isNotEmpty) {
+      if (isRtfOnDisk && isRichWithDelta) {
+        if (!await rtfWriteAllowed()) return SaveResult.failure('Cancelled');
         final rtf = RtfService.deltaToRtf(tab.deltaJson);
         await _fileService.writeRtfFile(currentPath, rtf);
         editor.markTabSavedAs(currentPath);
         return SaveResult.success();
       }
-      await editor.saveActiveTab();
+      final saved = await editor.saveActiveTab();
+      if (!saved) return SaveResult.failure('Could not save');
       return SaveResult.success();
     } catch (e) {
       if (kDebugMode) debugPrint('Save failed: $e');
@@ -138,9 +184,18 @@ class FileOperations {
   ///
   /// [resolvePassword] is called when the chosen path is .scrb and the tab
   /// doesn't already have a password. Return null to cancel.
+  ///
+  /// [confirmLossyRtf] is asked before a Delta→RTF write whose Delta carries
+  /// image/table embeds (RTF conversion drops them); false or null cancels.
+  ///
+  /// [onWillWrite] fires after the path and password are fully resolved,
+  /// immediately before the write starts — the point where the UI should show
+  /// its progress overlay for the (slow, key-deriving) encrypted write.
   Future<SaveResult> saveAs(
     EditorProvider editor, {
     required Future<String?> Function() resolvePassword,
+    Future<bool> Function()? confirmLossyRtf,
+    void Function(bool encrypted)? onWillWrite,
   }) async {
     final tab = editor.activeTab;
     if (tab == null) return SaveResult.failure('No active tab');
@@ -189,14 +244,30 @@ class FileOperations {
       if (password == null) return SaveResult.failure('Cancelled');
     }
 
+    final isRtfWrite =
+        isRtf && tab.mode == EditorMode.richText && tab.deltaJson.isNotEmpty;
+    if (isRtfWrite && deltaHasEmbeds(tab.deltaJson)) {
+      // RTF conversion drops image/table embeds — never silently.
+      final proceed = confirmLossyRtf != null && await confirmLossyRtf();
+      if (!proceed) return SaveResult.failure('Cancelled');
+    }
+
+    // All dialogs are done — let the UI raise its progress overlay before the
+    // slow encrypted write instead of after it (which showed nothing at all).
+    onWillWrite?.call(isEncrypted);
+
     try {
-      if (isRtf && tab.mode == EditorMode.richText && tab.deltaJson.isNotEmpty) {
+      if (isRtfWrite) {
         final rtf = RtfService.deltaToRtf(tab.deltaJson);
         await _fileService.writeRtfFile(effectivePath, rtf);
         editor.markTabSavedAs(effectivePath);
       } else {
-        await editor.saveActiveTabAs(effectivePath,
+        final wrote = await editor.saveActiveTabAs(effectivePath,
             encrypted: isEncrypted, password: password);
+        // saveActiveTabAs refuses when the tab got locked during the picker /
+        // password dialogs; reporting success here would tell the user a copy
+        // exists at a path nothing was written to.
+        if (!wrote) return SaveResult.failure('Tab is locked');
       }
       return SaveResult.success(newPath: effectivePath);
     } catch (e) {

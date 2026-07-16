@@ -211,6 +211,68 @@ void main() {
     });
   });
 
+  group('locked-tab mutator guards', () {
+    test('markTabSavedAs is a no-op on a locked tab', () async {
+      final p = await writeScrb('a.scrb', 'secret', 'pw');
+      final tab = editor.addLockedTab(p);
+
+      editor.markTabSavedAs('${tmp.path}${Platform.pathSeparator}else.txt');
+
+      expect(tab.filePath, p,
+          reason: 'a locked tab must never be re-pointed at a new path');
+      expect(tab.isEncrypted, isTrue,
+          reason: 'a locked tab must never be downgraded to unencrypted');
+      expect(tab.isLocked, isTrue);
+      expect(tab.password, isNull);
+    });
+  });
+
+  group('pre-lock save failure', () {
+    test('lockTab on a dirty tab whose save fails does not wipe content and '
+        'reports failure instead of throwing', () async {
+      final p = await writeScrb('a.scrb', 'original', 'pw');
+      await editor.openScrbFile(p, 'pw');
+      final tab = editor.activeTab!;
+      tab.controller.text = 'unsaved secret edit';
+      expect(tab.isDirty, isTrue);
+
+      // Point the tab at a path whose directory does not exist so the
+      // pre-lock save throws inside the file service.
+      tab.filePath = '${tmp.path}${Platform.pathSeparator}no_such_dir'
+          '${Platform.pathSeparator}gone.scrb';
+
+      final locked = await editor.lockTab(tab); // must complete, not throw
+      expect(locked, isFalse);
+      expect(tab.isLocked, isFalse);
+      expect(tab.controller.text, 'unsaved secret edit',
+          reason: 'a failed persist must never wipe the unsaved edits');
+      expect(tab.password, isNotNull,
+          reason: 'the password must survive so the user can still save');
+    });
+
+    test('lockAllEncrypted survives one failing tab and still locks the others', () async {
+      final good = await writeScrb('good.scrb', 'good secret', 'pw');
+      await editor.openScrbFile(good, 'pw');
+      final goodTab = editor.activeTab!;
+      goodTab.controller.text = 'good edited';
+
+      final bad = await writeScrb('bad.scrb', 'bad secret', 'pw');
+      await editor.openScrbFile(bad, 'pw');
+      final badTab = editor.activeTab!;
+      badTab.controller.text = 'bad edited';
+      badTab.filePath = '${tmp.path}${Platform.pathSeparator}no_such_dir'
+          '${Platform.pathSeparator}bad.scrb';
+
+      // The idle auto-lock timer calls this unawaited — it must not throw.
+      final locked = await editor.lockAllEncrypted();
+      expect(locked, 1);
+      expect(goodTab.isLocked, isTrue);
+      expect(badTab.isLocked, isFalse);
+      expect(badTab.controller.text, 'bad edited');
+      expect(await fs.readScrbFile(good, 'pw'), 'good edited');
+    });
+  });
+
   group('changeActivePassword', () {
     test('re-encrypts the file with the new password', () async {
       final p = await writeScrb('a.scrb', 'secret', 'old-pw');

@@ -116,13 +116,20 @@ class _ResizableImageState extends State<_ResizableImage> {
   static const double _defaultWidth = 360;
   static const double _step = 60;
 
+  /// Display constraint when no width attribute is stored (matches the
+  /// ConstrainedBox maxWidth), also the decode target for unsized embeds.
+  static const double _defaultDisplayWidth = 420;
+
   bool _hovering = false;
   ({String mime, Uint8List bytes})? _decoded;
   String? _decodedSource;
 
   ({String mime, Uint8List bytes})? get _image {
     if (_decodedSource != widget.source) {
-      _decoded = ImageEmbedService.decodeDataUri(widget.source);
+      // Cached: recreated embed states (tab switch, mode toggle, unlock) get
+      // the SAME bytes instance back, so MemoryImage hits Flutter's ImageCache
+      // instead of re-decoding the base64 and the bitmap.
+      _decoded = ImageEmbedService.decodeDataUriCached(widget.source);
       _decodedSource = widget.source;
     }
     return _decoded;
@@ -189,12 +196,21 @@ class _ResizableImageState extends State<_ResizableImage> {
             decoded.bytes,
             width: width,
             fit: width != null ? BoxFit.fitWidth : BoxFit.scaleDown,
+            // Decode at display size (physical px), not native resolution.
+            // ResizeImage never upscales, so small images stay untouched, and
+            // a user resize changes the key so it re-decodes at the new size.
+            cacheWidth: ImageEmbedService.displayCacheWidth(
+              width ?? _defaultDisplayWidth,
+              MediaQuery.devicePixelRatioOf(context),
+            ),
             errorBuilder: (_, _, _) => ScribImageEmbedBuilder._broken(context),
           );
 
+    final constrainedMaxWidth = width ?? _defaultDisplayWidth;
+
     final constrained = ConstrainedBox(
       constraints: BoxConstraints(
-        maxWidth: width ?? 420,
+        maxWidth: constrainedMaxWidth,
         maxHeight: 600,
       ),
       child: ClipRRect(

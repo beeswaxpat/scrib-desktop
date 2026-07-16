@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pub
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # Pinned at 11.5.0: embed mechanics, shortcut handling, and document
+      # change streams are verified against this exact version. Upgrades are
+      # done manually with full regression verification (see ARCHITECTURE.md).
+      - dependency-name: flutter_quill

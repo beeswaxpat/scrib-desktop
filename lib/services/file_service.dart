@@ -238,6 +238,7 @@ class ScribFileWriteException implements Exception {
 class FileService {
   /// Read a plaintext .txt file
   Future<String> readTxtFile(String path) async {
+    await AtomicWrite.recoverFileIfNeeded(path);
     try {
       return await File(path).readAsString(encoding: utf8);
     } catch (_) {
@@ -256,6 +257,7 @@ class FileService {
 
   /// Read and decrypt a .scrb v2 file. Returns null on wrong password or tamper.
   Future<String?> readScrbFile(String path, String password) async {
+    await AtomicWrite.recoverFileIfNeeded(path);
     final Uint8List bytes;
     try {
       bytes = await File(path).readAsBytes();
@@ -313,6 +315,7 @@ class FileService {
 
   /// Read a .rtf file. Tries UTF-8; falls back to Latin-1 for Word-style files.
   Future<String> readRtfFile(String path) async {
+    await AtomicWrite.recoverFileIfNeeded(path);
     final Uint8List bytes;
     try {
       bytes = await File(path).readAsBytes();

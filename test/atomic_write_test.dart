@@ -93,6 +93,48 @@ void main() {
           reason: 'content must be exactly one of the writes, not interleaved');
       expect(await File('$path${AtomicWrite.tmpSuffix}').exists(), isFalse);
     });
+
+    test('concurrent writes via case-variant spellings of one file are '
+        'serialized too', () async {
+      final path = p('variant.txt');
+      final upper = path.toUpperCase();
+      await Future.wait([
+        AtomicWrite.writeString(path, 'AAAA'),
+        AtomicWrite.writeString(upper, 'BBBB'),
+      ]);
+      final result = await File(path).readAsString();
+      expect(result == 'AAAA' || result == 'BBBB', isTrue,
+          reason: 'case variants share one physical staging file, so their '
+              'writes must share one lock');
+      expect(await File('$path${AtomicWrite.tmpSuffix}').exists(), isFalse);
+    }, skip: !Platform.isWindows
+        ? 'case-insensitive paths are Windows behavior'
+        : false);
+
+    test('write onto a path occupied by a directory throws and deletes the '
+        'staging file', () async {
+      final path = p('dest-is-dir');
+      await Directory(path).create();
+      await expectLater(
+        AtomicWrite.writeBytes(path, Uint8List.fromList([1, 2, 3])),
+        throwsA(anything),
+      );
+      expect(await File('$path${AtomicWrite.tmpSuffix}').exists(), isFalse,
+          reason: 'the rename-failure cleanup must remove the .scrib-tmp');
+      expect(await Directory(path).exists(), isTrue);
+    });
+  });
+
+  group('canonicalPath', () {
+    test('normalizes case and separators on Windows', () {
+      expect(canonicalPath('C:\\Notes\\A.txt'), canonicalPath('c:/notes/a.TXT'));
+    }, skip: !Platform.isWindows
+        ? 'case-insensitive paths are Windows behavior'
+        : false);
+
+    test('distinct files stay distinct', () {
+      expect(canonicalPath(p('a.txt')), isNot(canonicalPath(p('b.txt'))));
+    });
   });
 
   group('pure-Dart crash-safe fallback (forced)', () {
@@ -111,6 +153,32 @@ void main() {
       expect(await File(path).readAsString(), 'new');
       expect(await File('$path${AtomicWrite.bakSuffix}').exists(), isFalse);
       expect(await File('$path${AtomicWrite.tmpSuffix}').exists(), isFalse);
+    });
+
+    test('fallback deletes a stale pre-existing backup and still succeeds', () async {
+      final path = p('fb_stale.txt');
+      await File(path).writeAsString('old');
+      await File('$path${AtomicWrite.bakSuffix}').writeAsString('stale bak');
+      await AtomicWrite.writeString(path, 'new');
+      expect(await File(path).readAsString(), 'new');
+      expect(await File('$path${AtomicWrite.bakSuffix}').exists(), isFalse);
+    });
+
+    test('fallback write leaves the original intact when the backup slot is '
+        'blocked', () async {
+      final path = p('fb_blocked.txt');
+      await File(path).writeAsString('old');
+      // A DIRECTORY at the backup path makes `target.rename(bak.path)` throw.
+      await Directory('$path${AtomicWrite.bakSuffix}').create();
+
+      await expectLater(
+        AtomicWrite.writeString(path, 'new'),
+        throwsA(anything),
+      );
+      expect(await File(path).readAsString(), 'old',
+          reason: 'a failed fallback must never lose the previous content');
+      expect(await File('$path${AtomicWrite.tmpSuffix}').exists(), isFalse,
+          reason: 'the staging file must be cleaned up on failure');
     });
   });
 
@@ -169,6 +237,43 @@ void main() {
 
     test('on a non-existent directory does not throw', () async {
       await AtomicWrite.recoverIfNeeded('${tmp.path}/does-not-exist');
+    });
+
+    test('restores the backup and deletes the orphan tmp after a full '
+        'mid-fallback crash (both artifacts present, no primary)', () async {
+      await File(p('note.txt${AtomicWrite.bakSuffix}')).writeAsString('old');
+      await File(p('note.txt${AtomicWrite.tmpSuffix}')).writeAsString('new');
+      await AtomicWrite.recoverIfNeeded(tmp.path);
+      expect(await File(p('note.txt')).readAsString(), 'old',
+          reason: 'the backup is the last known-good content');
+      expect(
+          await File(p('note.txt${AtomicWrite.bakSuffix}')).exists(), isFalse);
+      expect(
+          await File(p('note.txt${AtomicWrite.tmpSuffix}')).exists(), isFalse);
+    });
+  });
+
+  group('recoverFileIfNeeded (lazy single-file repair)', () {
+    test('restores a stranded backup when the primary is missing', () async {
+      final path = p('lazy.txt');
+      await File('$path${AtomicWrite.bakSuffix}').writeAsString('stranded');
+      expect(await AtomicWrite.recoverFileIfNeeded(path), isTrue);
+      expect(await File(path).readAsString(), 'stranded');
+      expect(await File('$path${AtomicWrite.bakSuffix}').exists(), isFalse);
+    });
+
+    test('is a no-op when the primary exists', () async {
+      final path = p('present.txt');
+      await File(path).writeAsString('current');
+      await File('$path${AtomicWrite.bakSuffix}').writeAsString('stale');
+      expect(await AtomicWrite.recoverFileIfNeeded(path), isTrue);
+      expect(await File(path).readAsString(), 'current');
+      // The stale bak is left for the directory sweep to clean up.
+      expect(await File('$path${AtomicWrite.bakSuffix}').exists(), isTrue);
+    });
+
+    test('returns false when neither primary nor backup exists', () async {
+      expect(await AtomicWrite.recoverFileIfNeeded(p('ghost.txt')), isFalse);
     });
   });
 }

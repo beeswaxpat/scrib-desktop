@@ -195,4 +195,182 @@ void main() {
     expect(r.ok, isTrue);
     expect(r.newPath, path('my.note.scrb'));
   });
+
+  group('locked-tab guards', () {
+    test('saveActive refuses a locked tab and leaves the .scrb byte-identical', () async {
+      final p = path('locked-guard.scrb');
+      await fs.writeScrbFile(p, 'secret', 'pw', iterations: 1000);
+      editor.addLockedTab(p);
+      final before = await File(p).readAsBytes();
+
+      final r = await ops.saveActive(editor,
+          passwordForNewEncryption: 'attacker-pw');
+      expect(r.ok, isFalse);
+      expect(r.error, 'Tab is locked');
+      expect(await File(p).readAsBytes(), before);
+      expect(await fs.readScrbFile(p, 'pw'), 'secret');
+    });
+
+    test('saveAs refuses a locked tab before any dialog is shown', () async {
+      final p = path('locked-saveas.scrb');
+      await fs.writeScrbFile(p, 'secret', 'pw', iterations: 1000);
+      editor.addLockedTab(p);
+
+      final r = await ops.saveAs(editor, resolvePassword: () async => 'x');
+      expect(r.ok, isFalse);
+      // 'Tab is locked' (not 'Cancelled') proves the guard fired before the
+      // file picker, which is unavailable in tests and would have thrown.
+      expect(r.error, 'Tab is locked');
+    });
+  });
+
+  group('Case B2: mode/format swap for non-encrypted tabs', () {
+    test('rich tab over a .txt swaps to .rtf instead of writing the envelope', () async {
+      final txtPath = path('was-plain.txt');
+      await fs.writeTxtFile(txtPath, 'plain original');
+      tab().filePath = txtPath;
+      tab().mode = EditorMode.richText;
+      tab().deltaJson = '[{"insert":"rich body\\n"}]';
+      tab().savedDeltaJson = ''; // dirty
+      tab().isEncrypted = false;
+
+      final r = await ops.saveActive(editor, passwordForNewEncryption: null);
+      expect(r.ok, isTrue);
+      expect(r.extensionChanged, isTrue);
+      expect(r.newPath, endsWith('.rtf'));
+      final rtf = await fs.readRtfFile(r.newPath!);
+      expect(rtf, startsWith(r'{\rtf1'));
+      expect(rtf, contains('rich body'));
+      expect(rtf, isNot(contains('scrib_rich')));
+      expect(await File(txtPath).exists(), isFalse,
+          reason: 'the stale .txt original must not linger');
+      expect(tab().filePath, r.newPath);
+      expect(tab().isDirty, isFalse);
+    });
+
+    test('plain-mode tab over a .rtf swaps to .txt instead of writing a '
+        'headerless .rtf', () async {
+      final rtfPath = path('was-rich.rtf');
+      await fs.writeRtfFile(rtfPath, r'{\rtf1\ansi\deff0 formatted\par}');
+      tab().filePath = rtfPath;
+      tab().mode = EditorMode.plainText;
+      tab().controller.text = 'now plain text';
+      tab().isEncrypted = false;
+
+      final r = await ops.saveActive(editor, passwordForNewEncryption: null);
+      expect(r.ok, isTrue);
+      expect(r.extensionChanged, isTrue);
+      expect(r.newPath, endsWith('.txt'));
+      expect(await fs.readTxtFile(r.newPath!), 'now plain text');
+      expect(await File(rtfPath).exists(), isFalse);
+    });
+  });
+
+  group('lossy RTF writes (image/table embeds)', () {
+    const embedDelta =
+        '[{"insert":"text\\n"},{"insert":{"image":"data:image/png;base64,AAAA"}},{"insert":"\\n"}]';
+
+    test('in-place .rtf save with embeds is cancelled when declined', () async {
+      final p = path('embeds.rtf');
+      const original = r'{\rtf1\ansi\deff0 old\par}';
+      await fs.writeRtfFile(p, original);
+      tab().filePath = p;
+      tab().mode = EditorMode.richText;
+      tab().deltaJson = embedDelta;
+      tab().savedDeltaJson = ''; // dirty
+
+      bool asked = false;
+      final r = await ops.saveActive(
+        editor,
+        passwordForNewEncryption: null,
+        confirmLossyRtf: () async {
+          asked = true;
+          return false;
+        },
+      );
+      expect(asked, isTrue);
+      expect(r.ok, isFalse);
+      expect(r.error, 'Cancelled');
+      expect(await fs.readRtfFile(p), original);
+      expect(tab().isDirty, isTrue);
+    });
+
+    test('in-place .rtf save with embeds writes when confirmed', () async {
+      final p = path('embeds-ok.rtf');
+      await fs.writeRtfFile(p, r'{\rtf1\ansi\deff0 old\par}');
+      tab().filePath = p;
+      tab().mode = EditorMode.richText;
+      tab().deltaJson = embedDelta;
+      tab().savedDeltaJson = ''; // dirty
+
+      final r = await ops.saveActive(
+        editor,
+        passwordForNewEncryption: null,
+        confirmLossyRtf: () async => true,
+      );
+      expect(r.ok, isTrue);
+      final rtf = await fs.readRtfFile(p);
+      expect(rtf, startsWith(r'{\rtf1'));
+      expect(rtf, contains('text'));
+      expect(tab().isDirty, isFalse);
+    });
+
+    test('with no confirm callback the lossy write is refused', () async {
+      final p = path('embeds-nocb.rtf');
+      const original = r'{\rtf1\ansi\deff0 old\par}';
+      await fs.writeRtfFile(p, original);
+      tab().filePath = p;
+      tab().mode = EditorMode.richText;
+      tab().deltaJson = embedDelta;
+      tab().savedDeltaJson = ''; // dirty
+
+      final r = await ops.saveActive(editor, passwordForNewEncryption: null);
+      expect(r.ok, isFalse);
+      expect(r.error, 'Cancelled');
+      expect(await fs.readRtfFile(p), original);
+    });
+
+    test('embed-free .rtf save never asks', () async {
+      final p = path('noembeds.rtf');
+      await fs.writeRtfFile(p, r'{\rtf1\ansi\deff0 old\par}');
+      tab().filePath = p;
+      tab().mode = EditorMode.richText;
+      tab().deltaJson = '[{"insert":"no embeds here\\n"}]';
+      tab().savedDeltaJson = ''; // dirty
+
+      bool asked = false;
+      final r = await ops.saveActive(
+        editor,
+        passwordForNewEncryption: null,
+        confirmLossyRtf: () async {
+          asked = true;
+          return true;
+        },
+      );
+      expect(r.ok, isTrue);
+      expect(asked, isFalse);
+    });
+
+    test('decrypt-swap to .rtf with embeds also asks first (Case B)', () async {
+      final p = path('rich-embeds.scrb');
+      await fs.writeScrbFile(p, 'x', 'pw', iterations: 1000);
+      tab().filePath = p;
+      tab().isEncrypted = false;
+      tab().password = null;
+      tab().mode = EditorMode.richText;
+      tab().deltaJson = embedDelta;
+      tab().savedDeltaJson = ''; // dirty
+
+      final r = await ops.saveActive(
+        editor,
+        passwordForNewEncryption: null,
+        confirmLossyRtf: () async => false,
+      );
+      expect(r.ok, isFalse);
+      expect(r.error, 'Cancelled');
+      expect(await File(p).exists(), isTrue,
+          reason: 'the .scrb original must survive a cancelled swap');
+      expect(await fs.isScrbFile(p), isTrue);
+    });
+  });
 }

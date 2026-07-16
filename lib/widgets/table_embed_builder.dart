@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 import '../services/table_embed.dart';
@@ -61,37 +62,64 @@ void insertTableEmbed(QuillController controller, ScribTable table) {
   );
 }
 
+/// Visits every embed leaf in [document] in document order, passing its
+/// absolute document offset. Recurses into Block nodes (lists, blockquotes,
+/// code blocks), so an embed whose line carries a block format is still
+/// visited — root.children is NOT only Lines. Return false from [visit] to
+/// stop the walk early.
+void visitDocumentEmbeds(
+  Document document,
+  bool Function(int offset, Embed embed) visit,
+) {
+  _visitNodes(document.root.children, 0, visit);
+}
+
+bool _visitNodes(
+  Iterable<Node> nodes,
+  int baseOffset,
+  bool Function(int offset, Embed embed) visit,
+) {
+  var offset = baseOffset;
+  for (final node in nodes) {
+    if (node is Line) {
+      if (node.hasEmbed) {
+        var childOffset = offset;
+        for (final child in node.children) {
+          if (child is Embed && !visit(childOffset, child)) return false;
+          childOffset += child.length;
+        }
+      }
+    } else if (node is Block) {
+      // Block.length is the sum of its child lines, so recursing with the
+      // running offset keeps the arithmetic identical to the flat walk.
+      if (!_visitNodes(node.children, offset, visit)) return false;
+    }
+    offset += node.length;
+  }
+  return true;
+}
+
+/// Parses the Scrib table carried by [embed], or null if it is some other
+/// kind of embed (image, unknown custom type, corrupt payload).
+ScribTable? tableFromEmbed(Embed embed) {
+  if (embed.value.type != BlockEmbed.customType) return null;
+  return ScribTable.fromCustomEmbedData(embed.value.data);
+}
+
 /// Finds the document offset of the table embed carrying [id], or null if it is
 /// no longer present. Custom embeds are detached when handed to the builder, so
 /// their `documentOffset` is unusable; we locate the live node by id instead.
 int? findTableOffset(QuillController controller, String id) {
-  var lineOffset = 0;
-  for (final node in controller.document.root.children) {
-    if (node is Line && node.hasEmbed) {
-      var childOffset = lineOffset;
-      for (final child in node.children) {
-        if (child is Embed && child.value.type == BlockEmbed.customType) {
-          final parsed = ScribTable.fromData(
-            _innerCustomData(child.value.data),
-          );
-          if (parsed != null && parsed.id == id) return childOffset;
-        }
-        childOffset += child.length;
-      }
+  int? found;
+  visitDocumentEmbeds(controller.document, (offset, embed) {
+    final parsed = tableFromEmbed(embed);
+    if (parsed != null && parsed.id == id) {
+      found = offset;
+      return false;
     }
-    lineOffset += node.length;
-  }
-  return null;
-}
-
-/// A custom embed's data is `{"scrib-table":"<json>"}`; pull the inner json.
-dynamic _innerCustomData(dynamic data) {
-  try {
-    final embeddable = CustomBlockEmbed.fromJsonString(data as String);
-    return embeddable.data;
-  } catch (_) {
-    return null;
-  }
+    return true;
+  });
+  return found;
 }
 
 /// Renders Scrib table embeds as an editable grid. One builder handles all
@@ -237,7 +265,16 @@ class _EditableTableState extends State<_EditableTable> {
   /// ValueKey), so the resulting rebuild does not disturb the cursor.
   void _commit() {
     final offset = findTableOffset(widget.controller, _table.id);
-    if (offset == null) return;
+    if (offset == null) {
+      // Only reachable when the embed vanished from the document (deleted or
+      // undone out from under us). Surface it in debug builds so a lost cell
+      // edit is never completely silent.
+      if (kDebugMode) {
+        debugPrint(
+            'ScribTable ${_table.id}: embed not found, cell edit not committed');
+      }
+      return;
+    }
     final sel = widget.controller.selection;
     widget.controller.replaceText(
       offset,

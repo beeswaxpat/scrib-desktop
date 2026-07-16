@@ -5,6 +5,26 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:ffi/ffi.dart';
 
+/// Canonical form of [path] for file-identity comparison.
+///
+/// Windows paths are case-insensitive and accept both separators, so raw
+/// string equality lets `C:\notes\A.txt` and `c:/notes/a.txt` masquerade as
+/// two different files: two live tabs bound to one physical file, and two
+/// write locks guarding one physical staging file. Everything that compares
+/// or keys on a path for identity must go through this helper.
+String canonicalPath(String path) {
+  String abs;
+  try {
+    abs = File(path).absolute.path;
+  } catch (_) {
+    abs = path;
+  }
+  if (Platform.isWindows) {
+    abs = abs.replaceAll('/', '\\').toLowerCase();
+  }
+  return abs;
+}
+
 /// Windows-safe atomic file writes.
 ///
 /// Dart's `File.rename()` delegates to `MoveFileW` on Windows, which refuses
@@ -45,16 +65,19 @@ class AtomicWrite {
   static final Map<String, Future<void>> _writeLocks = {};
 
   static Future<void> _withPathLock(String path, Future<void> Function() action) async {
-    final prev = _writeLocks[path] ?? Future<void>.value();
+    // Key by canonical identity so case/separator variants of the same
+    // physical file share one lock (they also share one physical staging file).
+    final key = canonicalPath(path);
+    final prev = _writeLocks[key] ?? Future<void>.value();
     final completer = Completer<void>();
-    _writeLocks[path] = completer.future;
+    _writeLocks[key] = completer.future;
     try {
       await prev; // never completes with an error — see finally below
       await action();
     } finally {
       completer.complete();
-      if (identical(_writeLocks[path], completer.future)) {
-        _writeLocks.remove(path);
+      if (identical(_writeLocks[key], completer.future)) {
+        _writeLocks.remove(key);
       }
     }
   }
@@ -154,10 +177,30 @@ class AtomicWrite {
     }
   }
 
+  /// Lazy single-file crash recovery. If [path] is missing but
+  /// `<path>.scrib-bak` exists, the fallback rename was interrupted between
+  /// moving the original aside and moving the new content into place; restore
+  /// the backup so the file the user is about to open is not "gone". Returns
+  /// true when the primary exists afterwards. This closes the recovery hole
+  /// for files living outside the default save directory (the only directory
+  /// the startup [recoverIfNeeded] sweep is guaranteed to scan).
+  static Future<bool> recoverFileIfNeeded(String path) async {
+    try {
+      if (await File(path).exists()) return true;
+      final bak = File('$path$bakSuffix');
+      if (!await bak.exists()) return false;
+      await bak.rename(path);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Best-effort recovery of any stranded staging / backup files from a prior
   /// crash. Only files with Scrib's own [tmpSuffix] / [bakSuffix] are touched,
   /// so unrelated user files ending in `.tmp` or `.bak` are never affected.
-  /// Called on app start for the default save directory.
+  /// Called on app start for the default save directory and for the
+  /// directories of session/recent files.
   static Future<void> recoverIfNeeded(String directory) async {
     final dir = Directory(directory);
     if (!await dir.exists()) return;

@@ -1,7 +1,8 @@
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 
 /// Raised when a chosen image cannot be embedded. The message is user-facing.
@@ -180,6 +181,50 @@ class ImageEmbedService {
     }
   }
 
+  // ── Decode cache (embed rendering) ─────────────────────────────────────────
+
+  /// Max entries in the decoded-bytes LRU. Each entry is at most
+  /// [maxEmbedBytes] raw bytes, so the cache is bounded at ~32 MB.
+  static const int decodeCacheCapacity = 8;
+
+  /// LRU of decoded data URIs, keyed by the URI string itself. Returning the
+  /// SAME Uint8List instance across widget rebuilds matters: MemoryImage keys
+  /// Flutter's ImageCache by bytes-object identity, so a stable instance means
+  /// a tab switch re-uses the already-rasterized image instead of re-running
+  /// the base64 decode AND the bitmap decode.
+  static final LinkedHashMap<String, ({String mime, Uint8List bytes})>
+      _decodeCache = LinkedHashMap();
+
+  /// [decodeDataUri] with a small LRU so recreated embed widgets (tab switch,
+  /// mode toggle, unlock) share one decoded byte buffer per unique image.
+  static ({String mime, Uint8List bytes})? decodeDataUriCached(String source) {
+    final hit = _decodeCache.remove(source);
+    if (hit != null) {
+      _decodeCache[source] = hit; // re-insert: mark most recently used
+      return hit;
+    }
+    final decoded = decodeDataUri(source);
+    if (decoded == null) return null;
+    _decodeCache[source] = decoded;
+    if (_decodeCache.length > decodeCacheCapacity) {
+      _decodeCache.remove(_decodeCache.keys.first);
+    }
+    return decoded;
+  }
+
+  @visibleForTesting
+  static void clearDecodeCache() => _decodeCache.clear();
+
+  /// Decode target width in physical pixels for an embed displayed at
+  /// [displayWidth] logical pixels. Clamped so a corrupt stored width can
+  /// never ask the decoder for an absurd bitmap. Used as `cacheWidth` so a
+  /// 6000px photo shown as a 360px thumbnail is decoded at thumbnail size,
+  /// not at ~96 MB of native-resolution RGBA.
+  static int displayCacheWidth(double displayWidth, double devicePixelRatio) {
+    final dpr = devicePixelRatio <= 0 ? 1.0 : devicePixelRatio;
+    return (displayWidth * dpr).round().clamp(1, 2400);
+  }
+
   /// Decodes a `data:` URI into its MIME type and raw bytes. Returns null if the
   /// string is not a base64 data URI. Used by the embed renderer.
   static ({String mime, Uint8List bytes})? decodeDataUri(String source) {
@@ -191,6 +236,9 @@ class ImageEmbedService {
     final mime = header.split(';').first;
     try {
       final bytes = base64Decode(source.substring(comma + 1));
+      // An empty payload can never render; null routes the embed straight to
+      // its fallback chip instead of caching zero bytes for Image.memory.
+      if (bytes.isEmpty) return null;
       return (mime: mime, bytes: bytes);
     } catch (_) {
       return null;

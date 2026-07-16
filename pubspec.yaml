@@ -2,7 +2,7 @@ name: scrib_desktop
 description: "The encrypted Notepad. No tracking. No cloud. Just notes."
 publish_to: 'none'
 
-version: 1.8.0+9
+version: 1.9.0+10
 
 environment:
   sdk: ^3.10.7

@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 /// Scrib brand constants
 const String appName = 'Scrib';
-const String appVersion = '1.8.0';
+const String appVersion = '1.9.0';
 const String appTagline = 'No tracking. No cloud. Just notes.';
 
 /// .scrb file format magic bytes
@@ -58,8 +58,17 @@ const int scrbV3DefaultIterations = 100000;
 
 /// Defensive bounds on the iteration count parsed from an untrusted v3 header.
 /// Anything outside this range is rejected before key derivation.
+///
+/// The ceiling is a denial-of-service bound, not a growth bound: the KDF must
+/// run with the header's count BEFORE the HMAC can be verified, so a hostile
+/// file gets to demand that much CPU from anyone who merely tries a password.
+/// At the measured ~0.85s per 100k iterations (see [scrbV3DefaultIterations]),
+/// 2M caps the worst case near ~17s, while a 1e8 cap would freeze the app for
+/// ~14 minutes behind the modal decrypt overlay. 2M is 20x today's write-side
+/// default, which is ample headroom for the planned raise once per-session key
+/// caching lands. No Scrib build has ever written more than 100k.
 const int scrbMinIterations = 1;
-const int scrbMaxIterations = 100000000;
+const int scrbMaxIterations = 2000000;
 
 const int scrbKeyMaterialLength = 64; // 32 bytes enc + 32 bytes mac
 const int scrbIvLength = 16;          // AES block size

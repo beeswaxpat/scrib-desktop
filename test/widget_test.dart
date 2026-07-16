@@ -102,6 +102,56 @@ void main() {
       await pumpWide(t, harness());
       expect(find.text('Scrib v$appVersion'), findsOneWidget);
     });
+
+    testWidgets('shows untitled for a never-saved tab', (t) async {
+      await pumpWide(t, harness());
+      expect(find.text('untitled'), findsOneWidget);
+      expect(find.text('.txt'), findsNothing);
+    });
+
+    testWidgets('shows the actual extension for non-txt files', (t) async {
+      editor.activeTab!.filePath = '${tmp.path}${Platform.pathSeparator}notes.md';
+      editor.setActiveTab(0);
+      await pumpWide(t, harness());
+      expect(find.text('.md'), findsOneWidget);
+      expect(find.text('.txt'), findsNothing);
+    });
+
+    testWidgets('shows Ln, Col for the caret in a plain text tab', (t) async {
+      editor.activeTab!.controller.text = 'one\ntwo\nthree';
+      editor.invalidateTextCache();
+      await pumpWide(t, harness());
+      expect(find.text('Ln 1, Col 1'), findsOneWidget);
+
+      // Move the caret to line 2, column 3 ("tw|o" = offset 6).
+      editor.activeTab!.controller.selection =
+          const TextSelection.collapsed(offset: 6);
+      await t.pump();
+      expect(find.text('Ln 2, Col 3'), findsOneWidget);
+    });
+
+    test('formatLabel derives labels from the real path', () {
+      expect(ScribStatusBar.formatLabel(null), 'untitled');
+      expect(ScribStatusBar.formatLabel(r'C:\notes\a.md'), '.md');
+      expect(ScribStatusBar.formatLabel(r'C:\notes\data.JSON'), '.json');
+      expect(ScribStatusBar.formatLabel(r'C:\notes\doc.rtf'), '.rtf');
+      expect(ScribStatusBar.formatLabel(r'C:\notes\noext'), 'file');
+      // A dot in a folder name must not read as an extension.
+      expect(ScribStatusBar.formatLabel(r'C:\my.folder\noext'), 'file');
+    });
+
+    test('caretLineCol is 1-based and newline-aware', () {
+      final c = TextEditingController(text: 'ab\ncd');
+      c.selection = const TextSelection.collapsed(offset: 0);
+      expect(ScribStatusBar.caretLineCol(c), (1, 1));
+      c.selection = const TextSelection.collapsed(offset: 2);
+      expect(ScribStatusBar.caretLineCol(c), (1, 3));
+      c.selection = const TextSelection.collapsed(offset: 3);
+      expect(ScribStatusBar.caretLineCol(c), (2, 1));
+      c.selection = const TextSelection.collapsed(offset: 5);
+      expect(ScribStatusBar.caretLineCol(c), (2, 3));
+      c.dispose();
+    });
   });
 
   group('password dialogs', () {
