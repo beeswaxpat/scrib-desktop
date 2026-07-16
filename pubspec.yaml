@@ -32,7 +32,7 @@ dependencies:
 
   # Desktop-specific
   window_manager: ^0.4.2
-  desktop_drop: ^0.4.4
+  desktop_drop: ^0.7.1
 
   # Image embeds — flutter_svg renders SVG; image decodes the long-tail raster
   # formats (TIFF, TGA, ICO, PSD, etc.) and downscales large images on insert.
