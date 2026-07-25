@@ -1,21 +1,23 @@
 import 'dart:convert';
 
+import 'format_utils.dart';
+
 /// Converts between Quill Delta JSON and RTF format.
 ///
 /// Supports: bold, italic, underline, strikethrough, sub/superscript,
 /// hyperlinks (as `{\field{\*\fldinst HYPERLINK ...}}` fields), font family,
-/// font size, headers, bullet lists, numbered lists, checklists, and block
-/// quotes. Inline formatting is group-scoped on import (a `}` restores the
-/// state that was active at the matching `{`), unknown `{\*\...}` destination
-/// groups are skipped per the RTF spec, and Scrib's own block markers
-/// (bullet/number/checkbox glyphs plus `\outlinelevelN` for headers) are
-/// recognized on import so Scrib -> RTF -> Scrib round-trips block structure.
+/// font size, text colour and highlight (via a `\colortbl`), headers, bullet
+/// lists, numbered lists, checklists, and block quotes. Inline formatting is
+/// group-scoped on import (a `}` restores the state that was active at the
+/// matching `{`), unknown `{\*\...}` destination groups are skipped per the
+/// RTF spec, and Scrib's own block markers (bullet/number/checkbox glyphs plus
+/// `\outlinelevelN` for headers) are recognized on import so Scrib -> RTF ->
+/// Scrib round-trips block structure.
 ///
 /// RTF parsing is best-effort. The parser handles the subset of RTF produced
 /// by Word, WordPad, and LibreOffice for simple documents — complex features
-/// (nested tables, images, styles, custom color tables) pass through as
-/// stripped text. For a byte-perfect RTF exchange, use a dedicated library in
-/// a future revision.
+/// (nested tables, images, styles) pass through as stripped text. For a
+/// byte-perfect RTF exchange, use a dedicated library in a future revision.
 ///
 /// All methods are static — RtfService carries no state.
 class RtfService {
@@ -28,22 +30,28 @@ class RtfService {
   static const int _maxGroupDepth = 128;
   static const int _maxFieldDepth = 8;
 
+  // A crafted \colortbl must not turn into an unbounded allocation, and a
+  // document cannot plausibly need more distinct colours than this on export.
+  static const int _maxColorTableEntries = 1024;
+
   // Compiled once — the parser hits these on every token, so per-loop
   // RegExp construction was a measurable cost on large files.
   static final RegExp _ctrlWordPattern = RegExp(r'\\([a-z]+)(-?\d+)?\s?');
   static final RegExp _groupCtrlPattern = RegExp(r'\\([a-z]+)');
-  static final RegExp _headerCtrlPattern = RegExp(r'\\[a-z]+\d*\s?');
   static final RegExp _unicodeFallbackPattern =
       RegExp(r"\\'[0-9a-fA-F]{2}|\\[a-z]+-?\d*\s?");
-  // Lazy up to the first whitespace that starts a backslash-free run, so
-  // multi-word names ('Times New Roman') survive (the old greedy form kept
-  // only the last word) while `\fbidi \froman Name` still yields 'Name'.
-  static final RegExp _fontEntryPattern =
-      RegExp(r'\{\\f(\d+)[^}]*?\s([^;{}\\]+);\}');
   static final RegExp _hyperlinkQuotedPattern = RegExp(r'HYPERLINK\s+"([^"]*)"');
   static final RegExp _hyperlinkBarePattern =
       RegExp(r'HYPERLINK\s+([^\s"{}\\]+)');
-  static final RegExp _orderedMarkerPattern = RegExp(r'^\d{1,4}\.\t');
+  // Widened from \d{1,4}: the exporter numbers list items without a bound, so
+  // item 10000 stopped round-tripping and its marker became document text.
+  static final RegExp _orderedMarkerPattern = RegExp(r'^(\d{1,9})\.\t');
+  // Alternation of plain literals with bounded quantifiers: linear, and used
+  // only inside an already-delimited \colortbl group.
+  static final RegExp _colorComponentPattern =
+      RegExp(r'\\(red|green|blue)(\d{1,3})|;');
+  static final RegExp _rgbFunctionPattern =
+      RegExp(r'^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})');
 
   /// Header level -> exported font size in half-points (levels 1-6).
   static const List<int> _headerHalfPointSizes = [48, 40, 32, 28, 24, 20];
@@ -64,14 +72,23 @@ class RtfService {
       return _wrapRtf('${_escapeRtf(deltaJson)}\\par\n');
     }
     final fonts = <String>{'Times New Roman'}; // Default font at index 0
+    final colors = <int>[];
 
-    // First pass: collect all fonts used
+    // First pass: collect the fonts and colours the document uses. Both need a
+    // header table emitted before any run can reference them by index.
     for (final op in ops) {
-      if (op is Map && op.containsKey('attributes')) {
-        final attrs = op['attributes'] as Map<String, dynamic>?;
-        final font = attrs?['font'];
-        if (font is String) {
-          fonts.add(font);
+      if (op is! Map) continue;
+      final attrs = _attributesOf(op);
+      final font = attrs['font'];
+      if (font is String) {
+        fonts.add(font);
+      }
+      for (final key in const ['color', 'background']) {
+        final rgb = _parseColorValue(attrs[key]);
+        if (rgb != null &&
+            !colors.contains(rgb) &&
+            colors.length < _maxColorTableEntries) {
+          colors.add(rgb);
         }
       }
     }
@@ -84,6 +101,20 @@ class RtfService {
       fontTable.write('{\\f$i\\fswiss ${_escapeRtf(fontList[i])};}');
     }
     fontTable.write('}');
+
+    // Build colour table. Index 0 is the conventional "auto" slot (the leading
+    // ';'), so a colour's \cf/\highlight index is its position in `colors`
+    // PLUS ONE. _inlineFormatting must apply the same offset or every
+    // coloured run would be painted with its neighbour's colour.
+    final colorTable = StringBuffer();
+    if (colors.isNotEmpty) {
+      colorTable.write('{\\colortbl;');
+      for (final rgb in colors) {
+        colorTable.write('\\red${(rgb >> 16) & 0xFF}'
+            '\\green${(rgb >> 8) & 0xFF}\\blue${rgb & 0xFF};');
+      }
+      colorTable.write('}');
+    }
 
     // Second pass: group ops into paragraphs.
     // In Quill Delta, block attributes (header, list, blockquote) are on the
@@ -104,10 +135,14 @@ class RtfService {
         orderedNumber = 0;
       }
       final open = _blockFormattingOpen(blockAttrs, orderedNumber);
-      final close = _blockFormattingClose(blockAttrs);
       content.write(open);
       content.write(paraBuffer.toString());
-      content.write(close);
+      // The close mirrors the open exactly. A separate close that fired on the
+      // mere presence of a key emitted a lone '}' for an out-of-range header
+      // level or a blockquote value that was not literally true, which closed
+      // the document group early: Word and WordPad stopped reading there and
+      // treated the rest of the note as trailing garbage.
+      if (open.isNotEmpty) content.write('}');
       content.write('\\par\n');
       paraBuffer.clear();
       paraHasContent = false;
@@ -119,7 +154,7 @@ class RtfService {
       final insert = op['insert'];
       if (insert is! String) continue;
 
-      final attrs = (op['attributes'] as Map<String, dynamic>?) ?? {};
+      final attrs = _attributesOf(op);
 
       if (insert == '\n') {
         // End of paragraph — emit buffered content with block formatting first
@@ -128,22 +163,29 @@ class RtfService {
         // Split by embedded newlines (plain newlines inside a text run become
         // separate unstyled paragraphs)
         final lines = insert.split('\n');
-        final link = attrs['link'];
+        final rawLink = attrs['link'];
+        // The allowlist applies on the way OUT as well as on the way in: a
+        // note that picked up a file://, UNC or javascript: link by paste or
+        // by import must not become a Word document carrying a live field that
+        // resolves it. The text and its other formatting still export.
+        final link =
+            rawLink is String && isSafeLaunchUrl(rawLink) ? rawLink : null;
         // The link itself rides in the field instruction; the visible run
         // keeps its other inline formatting inside \fldrslt.
-        final inlineAttrs = link is String
+        final inlineAttrs = rawLink is String
             ? (Map<String, dynamic>.from(attrs)..remove('link'))
             : attrs;
         for (int j = 0; j < lines.length; j++) {
           if (lines[j].isNotEmpty) {
-            if (link is String) {
+            if (link != null) {
               paraBuffer.write(
                   '{\\field{\\*\\fldinst{HYPERLINK "${_escapeFieldUrl(link)}"}}{\\fldrslt ');
             }
-            paraBuffer.write(_inlineFormatting(inlineAttrs, fontList));
+            final open = _inlineFormatting(inlineAttrs, fontList, colors);
+            paraBuffer.write(open);
             paraBuffer.write(_escapeRtf(lines[j]));
-            paraBuffer.write(_inlineFormattingClose(inlineAttrs));
-            if (link is String) {
+            if (open.isNotEmpty) paraBuffer.write('}');
+            if (link != null) {
               paraBuffer.write('}}');
             }
             paraHasContent = true;
@@ -162,7 +204,8 @@ class RtfService {
       content.write('\\par\n');
     }
 
-    return _wrapRtf(content.toString(), fontTable: fontTable.toString());
+    return _wrapRtf(content.toString(),
+        fontTable: fontTable.toString(), colorTable: colorTable.toString());
   }
 
   /// Parse RTF string to Quill Delta JSON string.
@@ -180,56 +223,17 @@ class RtfService {
 
     final ops = <Map<String, dynamic>>[];
     final fonts = _parseFontTable(rtfContent);
+    final colors = _parseColorTable(rtfContent);
 
-    // Strip header - find content after font/color tables
-    var content = rtfContent;
-    // Remove the outer {\rtf1...} wrapper
-    if (content.startsWith('{\\rtf')) {
-      // Find the end of the header section (after all tables)
-      int depth = 0;
-      int headerEnd = 0;
-      bool inHeader = true;
-
-      for (int i = 0; i < content.length; i++) {
-        if (content[i] == '{') {
-          depth++;
-        } else if (content[i] == '}') {
-          depth--;
-          if (depth == 0) {
-            // End of document
-            content = content.substring(headerEnd, i);
-            break;
-          }
-        }
-
-        // Skip font table, color table, etc.
-        if (inHeader && depth == 1) {
-          if (i > 0 && content[i] != '{' && content[i] != '\\') {
-            // We've passed the header tables
-            inHeader = false;
-            headerEnd = i;
-          } else if (content[i] == '\\') {
-            // Skip header control words
-            final ctrlMatch = _headerCtrlPattern.matchAsPrefix(content, i);
-            if (ctrlMatch != null) {
-              // Check if this is a known header control word
-              final ctrl = ctrlMatch.group(0) ?? '';
-              if (ctrl.startsWith('\\rtf') || ctrl.startsWith('\\ansi') ||
-                  ctrl.startsWith('\\deff') || ctrl.startsWith('\\viewkind')) {
-                i = ctrlMatch.end - 1;
-                headerEnd = i + 1;
-                continue;
-              }
-              inHeader = false;
-              headerEnd = i;
-            }
-          }
-        }
-      }
-    }
-
-    // Parse RTF content into ops
-    _parseRtfContent(content, ops, fonts, _RtfInlineState(), 0);
+    // The whole {\rtf1 ...} document goes to the parser. A header-stripping
+    // pre-pass used to run first and declared the header over at the first
+    // depth-1 character that was neither '{' nor '\', which a closing brace
+    // satisfies, so a file with no font table lost its entire first body
+    // group, and a leading \'93 smart quote was decapitated into literal text.
+    // The pre-pass was never load-bearing: _parseRtfContent already skips
+    // \fonttbl, \colortbl, \stylesheet, \info and \pict groups by name, and
+    // the outer group's braces simply pair up on the inline-state stack.
+    _parseRtfContent(rtfContent, ops, fonts, colors, _RtfInlineState(), 0);
 
     // Ensure document ends with newline
     if (ops.isEmpty || !(ops.last['insert'] as String).endsWith('\n')) {
@@ -239,29 +243,204 @@ class RtfService {
     return jsonEncode(ops);
   }
 
-  /// Extract the full font table with a brace-balanced scan. A regex with a
-  /// lazy quantifier stopped at the first entry's closing brace, dropping
-  /// every font except \f0 in multi-font tables.
+  /// Extract the full font table with a brace-balanced scan, one entry at a
+  /// time. A single regex pairing a lazy `[^}]*?` with a greedy run over the
+  /// whole table backtracked quadratically whenever the table carried no `;}`
+  /// terminator: a crafted 256KB .rtf froze the window for 38 seconds with no
+  /// cancel, and because the file lands in the session snapshot, every
+  /// subsequent launch froze again before the window was usable.
   static Map<int, String> _parseFontTable(String rtfContent) {
     final fonts = <int, String>{};
-    final start = rtfContent.indexOf('{\\fonttbl');
+    const marker = '{\\fonttbl';
+    final start = rtfContent.indexOf(marker);
     if (start < 0) return fonts;
     final end = _skipGroup(rtfContent, start + 1);
     final table = rtfContent.substring(start, end);
-    for (final entry in _fontEntryPattern.allMatches(table)) {
-      final index = int.tryParse(entry.group(1) ?? '');
-      final name = entry.group(2)?.trim();
-      if (index != null && name != null) {
-        fonts[index] = name;
+
+    int i = marker.length;
+    while (i < table.length) {
+      if (table[i] != '{') {
+        i++;
+        continue;
       }
+      final entryEnd = _skipGroup(table, i + 1);
+      final inner =
+          table.substring(i + 1, entryEnd > i + 1 ? entryEnd - 1 : entryEnd);
+      _readFontEntry(inner, fonts);
+      i = entryEnd > i ? entryEnd : i + 1;
     }
     return fonts;
+  }
+
+  /// Read one font-table entry (the text between its braces, e.g.
+  /// `\f1\froman\fcharset0 Times New Roman;`) into [fonts]. The name is
+  /// everything after the entry's last PROPERTY control word, so multi-word
+  /// names survive; character escapes (`\'XX`, `\uN`) belong to the name, and
+  /// a nested `{\*\falt ...}` alternate name is ignored.
+  static void _readFontEntry(String inner, Map<int, String> fonts) {
+    if (!inner.startsWith('\\f')) return;
+    int p = 2;
+    final digitsStart = p;
+    while (p < inner.length && _isDigit(inner.codeUnitAt(p))) {
+      p++;
+    }
+    if (p == digitsStart) return;
+    final index = int.tryParse(inner.substring(digitsStart, p));
+    if (index == null) return;
+
+    final name = StringBuffer();
+    int depth = 0;
+    bool terminated = false;
+    while (p < inner.length) {
+      final c = inner[p];
+      if (c == '{') {
+        depth++;
+        p++;
+        continue;
+      }
+      if (c == '}') {
+        if (depth > 0) depth--;
+        p++;
+        continue;
+      }
+      if (depth > 0) {
+        p++;
+        continue;
+      }
+      if (c == ';') {
+        terminated = true;
+        break;
+      }
+      if (c == '\\') {
+        if (p + 4 <= inner.length && inner[p + 1] == "'") {
+          final code = int.tryParse(inner.substring(p + 2, p + 4), radix: 16);
+          if (code != null) name.writeCharCode(_cp1252(code));
+          p += 4;
+          continue;
+        }
+        final m = _ctrlWordPattern.matchAsPrefix(inner, p);
+        if (m == null) {
+          p += 2; // Control symbol: not part of the name.
+          continue;
+        }
+        if (m.group(1) == 'u') {
+          final v = int.tryParse(m.group(2) ?? '');
+          if (v != null) {
+            final cu = v < 0 ? v + 65536 : v;
+            if (cu >= 0 && cu <= 0xFFFF) name.writeCharCode(cu);
+          }
+          p = _skipUnicodeFallback(inner, m.end);
+          continue;
+        }
+        // A property word (\froman, \fcharset0, ...): anything read before it
+        // was properties, not the name.
+        name.clear();
+        p = m.end;
+        continue;
+      }
+      name.write(c);
+      p++;
+    }
+    if (!terminated) return;
+
+    final trimmed = name.toString().trim();
+    if (trimmed.isEmpty) return;
+    fonts[index] = trimmed;
+  }
+
+  /// Read `{\colortbl;\red255\green0\blue0;...}` into 0xRRGGBB values in
+  /// declaration order. A bare `;` entry (the conventional "auto" slot at
+  /// index 0) yields null so `\cf0` correctly means "no explicit colour".
+  static List<int?> _parseColorTable(String rtfContent) {
+    final colors = <int?>[];
+    const marker = '{\\colortbl';
+    final start = rtfContent.indexOf(marker);
+    if (start < 0) return colors;
+    final end = _skipGroup(rtfContent, start + 1);
+    final table = rtfContent.substring(start, end);
+
+    int r = 0, g = 0, b = 0;
+    bool seen = false;
+    for (final m in _colorComponentPattern.allMatches(table)) {
+      if (m.group(0) == ';') {
+        colors.add(seen ? ((r << 16) | (g << 8) | b) : null);
+        r = 0;
+        g = 0;
+        b = 0;
+        seen = false;
+        if (colors.length >= _maxColorTableEntries) break;
+        continue;
+      }
+      var v = int.tryParse(m.group(2) ?? '') ?? 0;
+      if (v > 255) v = 255;
+      switch (m.group(1)) {
+        case 'red':
+          r = v;
+          break;
+        case 'green':
+          g = v;
+          break;
+        case 'blue':
+          b = v;
+          break;
+      }
+      seen = true;
+    }
+    return colors;
+  }
+
+  /// Quill colour attribute value ('#rgb', '#rrggbb', '#aarrggbb', 'rgb(...)')
+  /// as 0xRRGGBB, or null when it is not a colour this writer can express.
+  /// Returning null must leave NO trace in the output: an attribute map that
+  /// carries only unexportable values has to emit nothing at all.
+  static int? _parseColorValue(Object? value) {
+    if (value is! String) return null;
+    var s = value.trim().toLowerCase();
+    if (s.startsWith('#')) {
+      s = s.substring(1);
+      if (s.length == 3) {
+        s = '${s[0]}${s[0]}${s[1]}${s[1]}${s[2]}${s[2]}';
+      } else if (s.length == 8) {
+        s = s.substring(2); // #aarrggbb: drop the alpha channel
+      }
+      if (s.length != 6) return null;
+      return int.tryParse(s, radix: 16);
+    }
+    final m = _rgbFunctionPattern.firstMatch(s);
+    if (m == null) return null;
+    int component(int group) {
+      final v = int.tryParse(m.group(group) ?? '') ?? 0;
+      return v > 255 ? 255 : v;
+    }
+
+    return (component(1) << 16) | (component(2) << 8) | component(3);
+  }
+
+  /// Colour for a `\cfN` / `\highlightN` index, bounds-checked: a crafted
+  /// \cf99 against a two-entry table must not throw and must not paint a
+  /// colour the document never declared.
+  static String? _colorAt(List<int?> colors, int? index) {
+    if (index == null || index < 0 || index >= colors.length) return null;
+    final rgb = colors[index];
+    if (rgb == null) return null;
+    return '#${rgb.toRadixString(16).padLeft(6, '0')}';
+  }
+
+  static bool _isDigit(int codeUnit) => codeUnit >= 0x30 && codeUnit <= 0x39;
+
+  /// Attributes of a Delta op, tolerating a malformed (non-map) value. The
+  /// exporter documents that garbage Delta never throws, but a bare cast to
+  /// `Map<String, dynamic>` threw on `"attributes": 5`.
+  static Map<String, dynamic> _attributesOf(Map op) {
+    final raw = op['attributes'];
+    return raw is Map<String, dynamic> ? raw : const <String, dynamic>{};
   }
 
   static void _parseRtfContent(
     String content,
     List<Map<String, dynamic>> ops,
     Map<int, String> fonts,
+    List<int?> colors,
     _RtfInlineState state,
     int fieldDepth,
   ) {
@@ -275,6 +454,9 @@ class RtfService {
     // \par, and real producers reset them per paragraph with \pard.
     final block = _RtfBlockState();
     int paraStart = ops.length;
+    // Number of the last ordered-list item accepted, so a literal "N.<tab>"
+    // is only treated as a list marker when it continues a real run.
+    int orderedRun = 0;
     final textBuffer = StringBuffer();
 
     void flushText() {
@@ -291,7 +473,9 @@ class RtfService {
 
     void flushParagraph() {
       flushText();
-      final blockAttrs = _resolveBlockAttrs(ops, paraStart, block);
+      final resolved = _resolveBlockAttrs(ops, paraStart, block, orderedRun);
+      final blockAttrs = resolved.$1;
+      orderedRun = resolved.$2;
       if (blockAttrs == null) {
         ops.add({'insert': '\n'});
       } else {
@@ -326,7 +510,8 @@ class RtfService {
             // \fldrslt for the visible text.
             flushText();
             if (fieldDepth < _maxFieldDepth) {
-              i = _parseField(content, i, ops, fonts, state, fieldDepth);
+              i = _parseField(
+                  content, i, ops, fonts, colors, state, fieldDepth);
             } else {
               i = _skipGroup(content, i);
             }
@@ -409,9 +594,21 @@ class RtfService {
               break;
             case 'fs':
               flushText();
-              if (paramVal != null) {
+              // Clamped: an unvalidated \fs0 or \fs2000000000 became a live
+              // Quill size attribute that the editor then laid out against.
+              // \fs2..\fs800 covers 1pt to 400pt.
+              if (paramVal != null && paramVal >= 2 && paramVal <= 800) {
                 state.size = paramVal ~/ 2; // RTF font size is in half-points
               }
+              break;
+            case 'cf':
+              flushText();
+              state.color = _colorAt(colors, paramVal);
+              break;
+            case 'highlight':
+            case 'chcbpat':
+              flushText();
+              state.background = _colorAt(colors, paramVal);
               break;
             case 'par':
               flushParagraph();
@@ -443,6 +640,8 @@ class RtfService {
               state.script = null;
               state.font = null;
               state.size = null;
+              state.color = null;
+              state.background = null;
               break;
           }
 
@@ -477,7 +676,7 @@ class RtfService {
             }
           }
           if (nextChar == '~') {
-            textBuffer.write(' '); // non-breaking space
+            textBuffer.write(' '); // non-breaking space
             i += 2;
             continue;
           }
@@ -515,16 +714,25 @@ class RtfService {
       if (c == '}') depth--;
       i++;
     }
-    return i;
+    // A backslash on the last character steps i past the end; callers pass the
+    // result straight to substring, and a truncated font table used to abort
+    // the whole import with a RangeError.
+    return i > content.length ? content.length : i;
   }
 
   /// Parse a {\field ...} group. [i] points at the '\field' control word just
   /// inside the group. Extracts the HYPERLINK target from \fldinst (if any,
-  /// and only if its scheme is http/https/mailto) and parses the \fldrslt
-  /// display text recursively with the link applied. Returns the index just
-  /// past the field group.
-  static int _parseField(String content, int i, List<Map<String, dynamic>> ops,
-      Map<int, String> fonts, _RtfInlineState state, int fieldDepth) {
+  /// and only if its scheme passes the shared allowlist) and parses the
+  /// \fldrslt display text recursively with the link applied. Returns the
+  /// index just past the field group.
+  static int _parseField(
+      String content,
+      int i,
+      List<Map<String, dynamic>> ops,
+      Map<int, String> fonts,
+      List<int?> colors,
+      _RtfInlineState state,
+      int fieldDepth) {
     final end = _skipGroup(content, i);
     final body = content.substring(i, end > i ? end - 1 : i);
 
@@ -546,10 +754,13 @@ class RtfService {
       final rsltEnd = _skipGroup(body, j);
       final inner = body.substring(j, rsltEnd > j ? rsltEnd - 1 : j);
       final childState = state.copy();
-      if (url != null && url.isNotEmpty && _isSafeLinkUrl(url)) {
+      // Same allowlist as the link dialog, the launch path and the export
+      // path: a note must never carry a javascript:, file: or UNC link,
+      // including one smuggled in via a crafted .rtf file.
+      if (url != null && url.isNotEmpty && isSafeLaunchUrl(url)) {
         childState.link = url;
       }
-      _parseRtfContent(inner, ops, fonts, childState, fieldDepth + 1);
+      _parseRtfContent(inner, ops, fonts, colors, childState, fieldDepth + 1);
     }
     return end;
   }
@@ -599,14 +810,6 @@ class RtfService {
     return buf.toString();
   }
 
-  /// Same allowlist as the link dialog and the launch path (format_utils):
-  /// a note must never carry a javascript:, file:, or other active-scheme
-  /// link, including one smuggled in via a crafted .rtf file.
-  static bool _isSafeLinkUrl(String url) {
-    final scheme = Uri.tryParse(url.trim())?.scheme.toLowerCase() ?? '';
-    return scheme == 'http' || scheme == 'https' || scheme == 'mailto';
-  }
-
   /// Decide the block attributes for the paragraph occupying
   /// ops[paraStart..end] based on the paragraph properties seen since the
   /// last \par/\pard. Recognizes Scrib's own export markers (and Word's
@@ -618,23 +821,28 @@ class RtfService {
   /// - hanging indent + 'N. '              -> ordered list
   /// - \li720 with no hanging indent       -> blockquote
   /// Markers are removed from the text so they don't duplicate Quill's own
-  /// list rendering.
-  static Map<String, dynamic>? _resolveBlockAttrs(
-      List<Map<String, dynamic>> ops, int paraStart, _RtfBlockState block) {
+  /// list rendering. Returns the attributes and the ordered-list run counter
+  /// to carry into the next paragraph.
+  static (Map<String, dynamic>?, int) _resolveBlockAttrs(
+      List<Map<String, dynamic>> ops,
+      int paraStart,
+      _RtfBlockState block,
+      int orderedRun) {
     final level = block.outlineLevel;
     if (level != null && level >= 0 && level < _headerHalfPointSizes.length) {
       _stripHeaderStyles(ops, paraStart, level + 1);
-      return {'header': level + 1};
+      return ({'header': level + 1}, 0);
     }
     if (block.leftIndent > 0 && block.firstLineIndent < 0) {
-      final listType = _stripListMarker(ops, paraStart);
-      if (listType != null) return {'list': listType};
-      return null;
+      final listType = _stripListMarker(ops, paraStart, orderedRun + 1);
+      if (listType == 'ordered') return ({'list': listType}, orderedRun + 1);
+      if (listType != null) return ({'list': listType}, 0);
+      return (null, 0);
     }
     if (block.leftIndent == 720 && block.firstLineIndent == 0) {
-      return {'blockquote': true};
+      return ({'blockquote': true}, 0);
     }
-    return null;
+    return (null, 0);
   }
 
   /// Remove the bold flag and the header-derived size from a header
@@ -655,8 +863,14 @@ class RtfService {
 
   /// If the paragraph's first text run starts with a recognized list marker,
   /// strip the marker and return the Quill list type; otherwise return null.
+  ///
+  /// [expectedNumber] is the number an ordered marker must carry to be treated
+  /// as one. A hanging indent plus a literal `N.<tab>` is exactly what Word
+  /// produces for a MANUALLY numbered paragraph (contracts, specs), and
+  /// stripping it deleted user text that Quill then renumbered from 1, so an
+  /// ordered marker only counts when it continues a run that started at 1.
   static String? _stripListMarker(
-      List<Map<String, dynamic>> ops, int paraStart) {
+      List<Map<String, dynamic>> ops, int paraStart, int expectedNumber) {
     if (paraStart >= ops.length) return null;
     final first = ops[paraStart];
     final text = first['insert'];
@@ -676,7 +890,7 @@ class RtfService {
       markerLen = 4;
     } else {
       final m = _orderedMarkerPattern.matchAsPrefix(text);
-      if (m != null) {
+      if (m != null && int.tryParse(m.group(1) ?? '') == expectedNumber) {
         type = 'ordered';
         markerLen = m.end;
       }
@@ -722,14 +936,24 @@ class RtfService {
     return table[b] ?? b;
   }
 
-  static String _inlineFormatting(Map<String, dynamic> attrs, List<String> fontList) {
+  /// Opening group for a run's inline formatting, or '' when this writer has
+  /// nothing to say about the run. The caller closes it iff it is non-empty.
+  ///
+  /// The control words are built FIRST for exactly that reason: the old form
+  /// opened '{' for any non-empty attribute map and then wrote the delimiter
+  /// space unconditionally, so an attribute the writer does not export (an
+  /// alignment, an indent) turned into a literal space in the user's document
+  /// on every save. Colour and highlight are exported properly now, against
+  /// the \colortbl deltaToRtf emits.
+  static String _inlineFormatting(
+      Map<String, dynamic> attrs, List<String> fontList, List<int> colorList) {
     if (attrs.isEmpty) return '';
 
-    final buf = StringBuffer('{');
-    if (attrs.containsKey('bold') && attrs['bold'] == true) buf.write('\\b');
-    if (attrs.containsKey('italic') && attrs['italic'] == true) buf.write('\\i');
-    if (attrs.containsKey('underline') && attrs['underline'] == true) buf.write('\\ul');
-    if (attrs.containsKey('strike') && attrs['strike'] == true) buf.write('\\strike');
+    final buf = StringBuffer();
+    if (attrs['bold'] == true) buf.write('\\b');
+    if (attrs['italic'] == true) buf.write('\\i');
+    if (attrs['underline'] == true) buf.write('\\ul');
+    if (attrs['strike'] == true) buf.write('\\strike');
     if (attrs['script'] == 'sub') buf.write('\\sub');
     if (attrs['script'] == 'super') buf.write('\\super');
     final font = attrs['font'];
@@ -737,19 +961,26 @@ class RtfService {
       final fontIndex = fontList.indexOf(font);
       if (fontIndex >= 0) buf.write('\\f$fontIndex');
     }
-    if (attrs.containsKey('size')) {
-      final size = attrs['size'];
-      if (size is num) {
-        buf.write('\\fs${(size * 2).round()}'); // RTF uses half-points
-      }
+    final size = attrs['size'];
+    if (size is num && size.isFinite && size > 0) {
+      // Bounded before .round(): a huge double throws there, and \fs is a
+      // half-point measure so 400pt is already past any real use.
+      final half = size >= 400 ? 800 : (size * 2).round();
+      buf.write('\\fs$half');
     }
-    buf.write(' ');
-    return buf.toString();
-  }
+    final color = _parseColorValue(attrs['color']);
+    if (color != null) {
+      final idx = colorList.indexOf(color);
+      if (idx >= 0) buf.write('\\cf${idx + 1}');
+    }
+    final background = _parseColorValue(attrs['background']);
+    if (background != null) {
+      final idx = colorList.indexOf(background);
+      if (idx >= 0) buf.write('\\highlight${idx + 1}');
+    }
 
-  static String _inlineFormattingClose(Map<String, dynamic> attrs) {
-    if (attrs.isEmpty) return '';
-    return '}';
+    if (buf.isEmpty) return '';
+    return '{$buf ';
   }
 
   static String _blockFormattingOpen(
@@ -771,9 +1002,9 @@ class RtfService {
       if (listType == 'ordered') {
         return '{\\li720\\fi-360 $orderedNumber.\\tab ';
       }
-      // Checklists export as [x] / [ ] markers. These branches must return a
-      // '{' like the others: _blockFormattingClose emits '}' for ANY list
-      // line, so a missing open brace here would corrupt the RTF.
+      // Checklists export as [x] / [ ] markers. Every branch that returns a
+      // non-empty string must open exactly one '{': the caller closes what
+      // this opened, and nothing else.
       if (listType == 'checked') return '{\\li720\\fi-360 [x]\\tab ';
       if (listType == 'unchecked') return '{\\li720\\fi-360 [ ]\\tab ';
       return '{';
@@ -781,18 +1012,15 @@ class RtfService {
     return '';
   }
 
-  static String _blockFormattingClose(Map<String, dynamic> attrs) {
-    if (attrs.containsKey('header') ||
-        attrs.containsKey('blockquote') ||
-        attrs.containsKey('list')) {
-      return '}';
-    }
-    return '';
-  }
-
-  static String _wrapRtf(String content, {String fontTable = '{\\fonttbl{\\f0\\fswiss Times New Roman;}}'}) {
-    return '{\\rtf1\\ansi\\deff0\n'
-        '$fontTable\n'
+  static String _wrapRtf(String content,
+      {String fontTable = '{\\fonttbl{\\f0\\fswiss Times New Roman;}}',
+      String colorTable = ''}) {
+    // \ansicpg1252 declares the code page the exporter's raw \'XX bytes (the
+    // \'95 list bullet) are written in; without it a reader is free to guess.
+    final tables =
+        colorTable.isEmpty ? fontTable : '$fontTable\n$colorTable';
+    return '{\\rtf1\\ansi\\ansicpg1252\\deff0\n'
+        '$tables\n'
         '$content\n'
         '}';
   }
@@ -813,6 +1041,11 @@ class RtfService {
         buf.write('\\{');
       } else if (codeUnit == 0x7D) { // }
         buf.write('\\}');
+      } else if (codeUnit == 0x09) { // tab
+        // A raw 0x09 is whitespace to an RTF reader, so an exported tab was
+        // silently lost. The trailing space is the control-word delimiter and
+        // readers (including this one) consume it.
+        buf.write('\\tab ');
       } else if (codeUnit > 127) {
         // RTF \uN takes a SIGNED 16-bit integer: code units above 32767 must be
         // emitted as N-65536. Iterating codeUnits emits each UTF-16 unit, so
@@ -840,6 +1073,8 @@ class _RtfInlineState {
   String? font;
   int? size;
   String? link;
+  String? color; // '#rrggbb'
+  String? background; // '#rrggbb'
 
   _RtfInlineState copy() {
     return _RtfInlineState()
@@ -850,7 +1085,9 @@ class _RtfInlineState {
       ..script = script
       ..font = font
       ..size = size
-      ..link = link;
+      ..link = link
+      ..color = color
+      ..background = background;
   }
 
   void setFrom(_RtfInlineState other) {
@@ -862,11 +1099,13 @@ class _RtfInlineState {
     font = other.font;
     size = other.size;
     link = other.link;
+    color = other.color;
+    background = other.background;
   }
 
   /// Quill attribute map for the current state. Keys match what the toolbar
   /// applies (Attribute.bold/italic/underline/strikeThrough/script/font/
-  /// size/link).
+  /// size/link/color/background).
   Map<String, dynamic> toAttributes() {
     final attrs = <String, dynamic>{};
     if (bold) attrs['bold'] = true;
@@ -877,6 +1116,8 @@ class _RtfInlineState {
     if (font != null) attrs['font'] = font;
     if (size != null) attrs['size'] = size;
     if (link != null) attrs['link'] = link;
+    if (color != null) attrs['color'] = color;
+    if (background != null) attrs['background'] = background;
     return attrs;
   }
 }
