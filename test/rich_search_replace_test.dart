@@ -77,7 +77,11 @@ void main() {
     return qc;
   }
 
-  Future<void> pumpPlainBar(WidgetTester tester, String text) async {
+  Future<void> pumpPlainBar(
+    WidgetTester tester,
+    String text, {
+    VoidCallback? onRevealSelection,
+  }) async {
     final tab = editor.activeTab!;
     tab.controller.text = text;
     editor.openFindReplace();
@@ -85,10 +89,10 @@ void main() {
       MaterialApp(
         home: ChangeNotifierProvider<EditorProvider>.value(
           value: editor,
-          child: const Scaffold(
+          child: Scaffold(
             body: Align(
               alignment: Alignment.topCenter,
-              child: ScribSearchBar(),
+              child: ScribSearchBar(onRevealSelection: onRevealSelection),
             ),
           ),
         ),
@@ -399,6 +403,154 @@ void main() {
       expect(tab.controller.text, 'abc cat');
       expect(tab.controller.selection.start, 4);
       expect(tab.controller.selection.end, 7);
+    });
+
+    testWidgets(
+        'a select-all that outlives a shrinking Replace All cannot throw out '
+        'of the next Replace', (tester) async {
+      await pumpPlainBar(tester, 'cat cat cat');
+      final tab = editor.activeTab!;
+      // Ctrl+A: the whole 11-character document.
+      tab.controller.selection =
+          const TextSelection(baseOffset: 0, extentOffset: 11);
+      await setQuery(tester, 'cat');
+      await setReplacement(tester, 'x');
+      await tapReplaceAll(tester);
+
+      expect(tab.controller.text, 'x x x');
+      expect(tab.controller.selection.end,
+          lessThanOrEqualTo(tab.controller.text.length),
+          reason: 'only the BASE endpoint used to be range-checked');
+
+      // With extentOffset left at 11 against 5 characters, _replaceCurrent's
+      // substring threw a RangeError out of the button callback on every click.
+      await tapReplace(tester);
+      expect(tester.takeException(), isNull);
+      expect(tab.controller.text, 'x x x');
+    });
+
+    testWidgets(
+        'every plain-mode navigation asks the editor to reveal the selection',
+        (tester) async {
+      var reveals = 0;
+      await pumpPlainBar(tester, 'cat cat',
+          onRevealSelection: () => reveals++);
+      final tab = editor.activeTab!;
+      await setQuery(tester, 'cat');
+
+      await pressEnter(tester);
+      expect(tab.controller.selection.start, 0);
+      expect(reveals, 1,
+          reason: 'a programmatic selection never scrolls itself into view, '
+              'so Find Next moved an off-screen caret with nothing visible');
+
+      await pressEnter(tester);
+      expect(tab.controller.selection.start, 4);
+      expect(reveals, 2);
+    });
+  });
+
+  group('whole word boundaries', () {
+    // 'naive' with a diaeresis on the i: one non-ASCII letter is enough to
+    // make the old ASCII-only boundary test fire in the middle of a word.
+    const naive = 'naïve';
+
+    testWidgets('a rejected candidate does not hide the genuine match',
+        (tester) async {
+      await pumpPlainBar(tester, 'ab ab a');
+      await tester.tap(find.text('|ab|'));
+      await tester.pump();
+      await setQuery(tester, 'ab a');
+
+      // The candidate at 0 fails the boundary test ('ab ab'); the real match
+      // at 3 was skipped because the scan advanced by the whole needle.
+      expect(find.text('1/1'), findsOneWidget);
+
+      await setReplacement(tester, 'X');
+      await tapReplaceAll(tester);
+      expect(editor.activeTab!.controller.text, 'ab X');
+    });
+
+    testWidgets('an accented letter bounds a match on the right',
+        (tester) async {
+      await pumpPlainBar(tester, naive);
+      await tester.tap(find.text('|ab|'));
+      await tester.pump();
+      await setQuery(tester, 'na');
+      expect(find.text('0 results'), findsOneWidget);
+
+      await setReplacement(tester, 'X');
+      await tapReplaceAll(tester);
+      expect(editor.activeTab!.controller.text, naive,
+          reason: 'ASCII-only boundaries made whole-word Replace All cut this '
+              'word in half');
+    });
+
+    testWidgets('an accented letter bounds a match on the left',
+        (tester) async {
+      await pumpPlainBar(tester, naive);
+      await tester.tap(find.text('|ab|'));
+      await tester.pump();
+      await setQuery(tester, 've');
+      expect(find.text('0 results'), findsOneWidget);
+    });
+
+    testWidgets('a fully accented word still matches whole-word',
+        (tester) async {
+      await pumpPlainBar(tester, '$naive idea');
+      await tester.tap(find.text('|ab|'));
+      await tester.pump();
+      await setQuery(tester, naive);
+      expect(find.text('1/1'), findsOneWidget);
+    });
+  });
+
+  group('global search handover', () {
+    testWidgets(
+        'the handed-over query jumps to the first match once the rich tab '
+        'controller arrives', (tester) async {
+      final tab = editor.activeTab!;
+      tab.mode = EditorMode.richText;
+      final ops = <Map<String, dynamic>>[
+        {'insert': 'alpha cat beta\n'},
+      ];
+      tab.deltaJson = jsonEncode(ops);
+      final qc = QuillController(
+        document: Document.fromJson(ops),
+        selection: const TextSelection.collapsed(offset: 0),
+      );
+      addTearDown(qc.dispose);
+
+      editor.openFindWithQuery('cat');
+
+      Widget bar(QuillController? controller) => MaterialApp(
+            home: ChangeNotifierProvider<EditorProvider>.value(
+              value: editor,
+              child: Scaffold(
+                body: Align(
+                  alignment: Alignment.topCenter,
+                  child: ScribSearchBar(quillController: controller),
+                ),
+              ),
+            ),
+          );
+
+      // The editor defers a rich tab's first layout and publishes its
+      // controller in a later post-frame callback, so the bar mounts with no
+      // controller at all.
+      await tester.pumpWidget(bar(null));
+      await tester.pump();
+      expect(editor.pendingFindQuery, isEmpty,
+          reason: 'the query is consumed from the provider on init');
+
+      // The controller lands a few frames later. The bar has no key, so its
+      // State is reused and only didUpdateWidget can still honor the handover.
+      await tester.pumpWidget(bar(qc));
+      await tester.pump();
+
+      expect(qc.selection.start, 6);
+      expect(qc.selection.end, 9);
+      expect(find.text('1/1'), findsOneWidget);
     });
   });
 }

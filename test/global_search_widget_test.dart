@@ -26,6 +26,7 @@ void main() {
     await settings.initForTests(tmp.path);
     fs = FileService();
     editor = EditorProvider(fs, settings);
+    GlobalSearchPanel.debugCachedExtractionCount = 0;
   });
 
   tearDown(() async {
@@ -181,6 +182,68 @@ void main() {
     expect(find.byIcon(Icons.description_outlined), findsOneWidget,
         reason: 'text living only in a table cell must be searchable');
     expect(find.text('1'), findsOneWidget);
+  });
+
+  group('locked tabs and cached plaintext', () {
+    // A rich tab, because only rich tabs go through the extraction cache: the
+    // cache holds the full decrypted note, so it has to die with the search.
+    void seedRichTab() {
+      final tab = editor.tabs[0];
+      tab.mode = EditorMode.richText;
+      tab.deltaJson = jsonEncode([
+        {'insert': 'secret needle\n'}
+      ]);
+    }
+
+    testWidgets('a locked tab is neither searched nor left cached', (t) async {
+      seedRichTab();
+      await t.pumpWidget(harness());
+      await typeQuery(t, 'needle');
+      expect(find.byIcon(Icons.description_outlined), findsOneWidget);
+      expect(GlobalSearchPanel.debugCachedExtractionCount, 1);
+
+      // Lock WITHOUT wiping the content: the panel must refuse the tab on
+      // isLocked alone rather than relying on EditorTab.lock() having emptied
+      // it, and it must not answer from the text it cached before the lock.
+      editor.tabs[0].isLocked = true;
+      editor.setActiveTab(0); // notify: the panel re-queries on provider change
+      await t.pump();
+
+      expect(find.byIcon(Icons.description_outlined), findsNothing);
+      expect(find.text('No matches in any open tab'), findsOneWidget);
+      expect(GlobalSearchPanel.debugCachedExtractionCount, 0);
+    });
+
+    testWidgets('clearing the query drops the cached decrypted text',
+        (t) async {
+      seedRichTab();
+      await t.pumpWidget(harness());
+      await typeQuery(t, 'needle');
+      expect(GlobalSearchPanel.debugCachedExtractionCount, 1);
+
+      await typeQuery(t, '');
+      expect(GlobalSearchPanel.debugCachedExtractionCount, 0,
+          reason: 'the empty-query early return used to skip the prune, so '
+              'every rich tab stayed resident in plaintext while the panel '
+              'sat open on a cleared field');
+    });
+
+    testWidgets('closing the panel drops the cached decrypted text', (t) async {
+      seedRichTab();
+      await t.pumpWidget(harness());
+      await typeQuery(t, 'needle');
+      expect(GlobalSearchPanel.debugCachedExtractionCount, 1);
+
+      await t.pumpWidget(
+        MaterialApp(
+          home: ChangeNotifierProvider<EditorProvider>.value(
+            value: editor,
+            child: const Scaffold(body: SizedBox.shrink()),
+          ),
+        ),
+      );
+      expect(GlobalSearchPanel.debugCachedExtractionCount, 0);
+    });
   });
 
   testWidgets('close button has Tooltip and Semantics', (t) async {

@@ -10,8 +10,17 @@ import '../providers/editor_provider.dart';
 /// the panel (handled by MainScreen). Clicking a result switches to that tab
 /// and opens the per-tab Find bar pre-populated with the query, automatically
 /// jumping to the first match.
+///
+/// A locked tab is never searched and never cached: it holds no decrypted
+/// content, and the panel refuses it on isLocked rather than trusting that.
 class GlobalSearchPanel extends StatefulWidget {
   const GlobalSearchPanel({super.key});
+
+  /// How many rich-tab extractions the mounted panel is holding. Each entry is
+  /// a full decrypted note, so this is exposed to let tests pin that the text
+  /// is dropped when the query is cleared, a tab locks, or the panel closes.
+  @visibleForTesting
+  static int debugCachedExtractionCount = 0;
 
   @override
   State<GlobalSearchPanel> createState() => _GlobalSearchPanelState();
@@ -51,8 +60,14 @@ class _GlobalSearchPanelState extends State<GlobalSearchPanel> {
     _debounce?.cancel();
     _controller.dispose();
     _focusNode.dispose();
+    // Decrypted note text must not outlive the panel that extracted it.
+    _extractCache.clear();
+    _syncCacheCount();
     super.dispose();
   }
+
+  void _syncCacheCount() =>
+      GlobalSearchPanel.debugCachedExtractionCount = _extractCache.length;
 
   void _onQueryChanged(String query) {
     _debounce?.cancel();
@@ -77,6 +92,10 @@ class _GlobalSearchPanelState extends State<GlobalSearchPanel> {
   /// helper, so table cell text is findable here exactly as it is in the
   /// per-tab find bar and the word counts.
   String _searchableTextOf(EditorTab tab) {
+    // A locked tab's content is wiped by EditorTab.lock(), but refuse it on
+    // isLocked rather than relying on that: global search must never surface a
+    // locked note, whatever state a future path leaves behind on the tab.
+    if (tab.isLocked) return '';
     if (tab.mode != EditorMode.richText) return tab.controller.text;
     final cached = _extractCache[tab];
     if (cached != null && identical(cached.source, tab.deltaJson)) {
@@ -84,6 +103,7 @@ class _GlobalSearchPanelState extends State<GlobalSearchPanel> {
     }
     final text = extractSearchableDeltaText(tab.deltaJson);
     _extractCache[tab] = (source: tab.deltaJson, text: text);
+    _syncCacheCount();
     return text;
   }
 
@@ -91,7 +111,22 @@ class _GlobalSearchPanelState extends State<GlobalSearchPanel> {
   /// against the provider's CURRENT tab list every build, so closed tabs drop
   /// out of the results and counts stay honest.
   List<_SearchResult> _computeResults(EditorProvider editor, String query) {
-    if (query.trim().isEmpty) return const [];
+    // Drop the cache BEFORE the empty-query return. Every entry is a full
+    // decrypted note, and returning early left all of them resident for as
+    // long as the panel stayed open on a cleared field: the lock screen
+    // promises that content is not in memory.
+    if (query.trim().isEmpty) {
+      if (_extractCache.isNotEmpty) {
+        _extractCache.clear();
+        _syncCacheCount();
+      }
+      return const [];
+    }
+    // Prune first, so a tab closed or LOCKED since the last search can never
+    // be searched from, or kept alive by, a stale entry.
+    _extractCache.removeWhere(
+        (tab, _) => tab.isLocked || !editor.tabs.contains(tab));
+    _syncCacheCount();
     final q = query.toLowerCase();
     final results = <_SearchResult>[];
     for (final tab in editor.tabs) {
@@ -107,8 +142,6 @@ class _GlobalSearchPanelState extends State<GlobalSearchPanel> {
       }
     }
     results.sort((a, b) => b.matchCount.compareTo(a.matchCount));
-    // Drop cache entries for tabs that no longer exist.
-    _extractCache.removeWhere((tab, _) => !editor.tabs.contains(tab));
     return results;
   }
 

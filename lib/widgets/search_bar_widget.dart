@@ -8,7 +8,8 @@ import 'table_embed_builder.dart';
 /// Per-tab Find / Find & Replace bar.
 /// - showReplace comes from EditorProvider (Ctrl+F = find only, Ctrl+H = find+replace).
 /// - If a pendingFindQuery was set (via global search navigation), it's loaded
-///   on init and a findNext() is triggered automatically to jump to the first match.
+///   on init and a findNext() is triggered automatically to jump to the first
+///   match (in rich mode, deferred until that tab's QuillController arrives).
 /// - Otherwise the field is prefilled from the editor's current selection.
 /// - Options: match case + whole word (kept for the app session only).
 /// - Keys (only while focus is inside the bar): Enter next, Shift+Enter
@@ -23,7 +24,18 @@ import 'table_embed_builder.dart';
 class ScribSearchBar extends StatefulWidget {
   final QuillController? quillController;
 
-  const ScribSearchBar({super.key, this.quillController});
+  /// Called after a match is selected in PLAIN-text mode. Flutter never
+  /// scrolls a programmatic selection into view (only user edits and focus
+  /// changes schedule a caret reveal), so Find Next used to move an off-screen
+  /// caret with nothing visibly happening. Rich mode needs no hook:
+  /// flutter_quill reveals the caret on every controller notification.
+  final VoidCallback? onRevealSelection;
+
+  const ScribSearchBar({
+    super.key,
+    this.quillController,
+    this.onRevealSelection,
+  });
 
   /// Reset the session-scoped search options (match case / whole word) so
   /// tests never leak state into each other.
@@ -63,6 +75,15 @@ class _ScribSearchBarState extends State<ScribSearchBar> {
   /// Longest editor selection that is still auto-loaded into the find field.
   static const int _maxPrefillLength = 200;
 
+  /// Query handed over by global search, kept until the rich editor's
+  /// QuillController for the tab we were sent to actually arrives. The editor
+  /// defers a rich tab's first layout by a frame and publishes its controller
+  /// in a post-frame callback, so at initState time this bar still sees the
+  /// PREVIOUS tab's controller (or none at all) and the one-shot apply either
+  /// reported '0 results' or counted the wrong note. Dropped as soon as the
+  /// user edits the query themselves.
+  String? _pendingFind;
+
   @override
   void initState() {
     super.initState();
@@ -73,8 +94,8 @@ class _ScribSearchBarState extends State<ScribSearchBar> {
       if (pending.isNotEmpty) {
         _searchController.text = pending;
         editor.clearPendingFindQuery();
-        _updateMatchCount(editor);
-        _findNext(editor);
+        _pendingFind = pending;
+        _applyPendingFind(editor);
       } else {
         final selected = _selectedEditorText(editor);
         if (selected.isNotEmpty) {
@@ -92,11 +113,45 @@ class _ScribSearchBarState extends State<ScribSearchBar> {
   }
 
   @override
+  void didUpdateWidget(covariant ScribSearchBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // This bar has no key, so a tab switch reuses its State and initState can
+    // never re-run. The controller for the tab global search sent us to lands
+    // here, several frames later; that is the only chance left to honor the
+    // handover.
+    if (_pendingFind == null ||
+        identical(oldWidget.quillController, widget.quillController)) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _pendingFind == null) return;
+      _applyPendingFind(context.read<EditorProvider>());
+    });
+  }
+
+  @override
   void dispose() {
     _searchController.dispose();
     _replaceController.dispose();
     _searchFocus.dispose();
     super.dispose();
+  }
+
+  /// Jump to the first match of a query carried over from global search.
+  /// In rich mode there is nothing to search until a QuillController exists,
+  /// and the query stays pending even after a successful apply so a controller
+  /// still belonging to the OUTGOING tab cannot swallow the handover.
+  void _applyPendingFind(EditorProvider editor) {
+    if (_pendingFind == null) return;
+    final tab = editor.activeTab;
+    if (tab == null) return;
+    if (tab.mode == EditorMode.richText) {
+      if (widget.quillController == null) return;
+    } else {
+      _pendingFind = null; // plain mode has no late-arriving controller
+    }
+    _updateMatchCount(editor);
+    _findNext(editor);
   }
 
   // ── Query matching ─────────────────────────────────────────────────────────
@@ -124,24 +179,56 @@ class _ScribSearchBarState extends State<ScribSearchBar> {
     while ((idx = haystack.indexOf(needle, idx)) != -1) {
       if (!_wholeWord || _isWholeWordAt(haystack, idx, needle.length)) {
         result.add(idx);
+        idx += needle.length;
+      } else {
+        // Step ONE character past a rejected candidate, not a whole needle:
+        // a query that can overlap itself ('ab a' inside 'ab ab a') hid the
+        // genuine match behind the rejected one, so Replace All left it in the
+        // document while reporting there was nothing to replace.
+        idx += 1;
       }
-      idx += needle.length;
     }
     return result;
   }
 
-  static bool _isWholeWordAt(String text, int start, int length) {
-    final end = start + length;
-    final beforeOk = start == 0 || !_isWordChar(text.codeUnitAt(start - 1));
-    final afterOk = end >= text.length || !_isWordChar(text.codeUnitAt(end));
-    return beforeOk && afterOk;
+  static bool _isWholeWordAt(String text, int start, int length) =>
+      !_isWordCharEndingAt(text, start) &&
+      !_isWordCharStartingAt(text, start + length);
+
+  /// What counts as a word character for whole-word matching: any Unicode
+  /// letter, number, combining mark or underscore. This used to be the ASCII
+  /// ranges only, so every accented or non-Latin letter read as a boundary and
+  /// whole-word Replace All cut accented words in half: the one mode whose job
+  /// is to prevent mid-word edits was performing one.
+  static final RegExp _wordChar = RegExp(r'[\p{L}\p{N}\p{M}_]', unicode: true);
+
+  static bool _isHighSurrogate(int unit) => unit >= 0xD800 && unit <= 0xDBFF;
+
+  static bool _isLowSurrogate(int unit) => unit >= 0xDC00 && unit <= 0xDFFF;
+
+  /// Whether the character ENDING at [end] (exclusive) is a word character.
+  /// Surrogate pairs are read whole, or an astral letter would be tested as a
+  /// lone half that matches no Unicode property.
+  static bool _isWordCharEndingAt(String text, int end) {
+    if (end <= 0 || end > text.length) return false;
+    final start = (end >= 2 &&
+            _isLowSurrogate(text.codeUnitAt(end - 1)) &&
+            _isHighSurrogate(text.codeUnitAt(end - 2)))
+        ? end - 2
+        : end - 1;
+    return _wordChar.hasMatch(text.substring(start, end));
   }
 
-  static bool _isWordChar(int c) =>
-      (c >= 0x30 && c <= 0x39) || // 0-9
-      (c >= 0x41 && c <= 0x5A) || // A-Z
-      (c >= 0x61 && c <= 0x7A) || // a-z
-      c == 0x5F; // _
+  /// Whether the character STARTING at [start] is a word character.
+  static bool _isWordCharStartingAt(String text, int start) {
+    if (start < 0 || start >= text.length) return false;
+    final end = (_isHighSurrogate(text.codeUnitAt(start)) &&
+            start + 1 < text.length &&
+            _isLowSurrogate(text.codeUnitAt(start + 1)))
+        ? start + 2
+        : start + 1;
+    return _wordChar.hasMatch(text.substring(start, end));
+  }
 
   bool _equalsQuery(String text, String query) =>
       _caseSensitive ? text == query : text.toLowerCase() == query.toLowerCase();
@@ -348,7 +435,12 @@ class _ScribSearchBarState extends State<ScribSearchBar> {
                           fontSize: 13,
                         ),
                       ),
-                      onChanged: (_) => _updateMatchCount(editor),
+                      onChanged: (_) {
+                        // The user is driving the query now: stop re-applying
+                        // the query global search handed over.
+                        _pendingFind = null;
+                        _updateMatchCount(editor);
+                      },
                       onSubmitted: (_) => _findNext(editor),
                       // Keep focus after Enter so repeated Enter cycles
                       // through matches (default behavior unfocuses on done).
@@ -537,6 +629,10 @@ class _ScribSearchBarState extends State<ScribSearchBar> {
         baseOffset: match.offset,
         extentOffset: match.offset + match.length,
       );
+      // Assigning the selection does not scroll it into view, and the bar
+      // deliberately keeps focus on its own field, so without this the match
+      // could sit hundreds of lines off-screen and search looked broken.
+      widget.onRevealSelection?.call();
     }
   }
 
@@ -607,7 +703,12 @@ class _ScribSearchBarState extends State<ScribSearchBar> {
     } else {
       final selection = tab.controller.selection;
       if (!selection.isValid || selection.isCollapsed) { _findNext(editor); return; }
-      final selectedText = tab.controller.text.substring(selection.start, selection.end);
+      final text = tab.controller.text;
+      // A selection left over from a shrinking Replace All can reach past the
+      // end of the content; substring would then throw a RangeError straight
+      // out of the button callback. Mirrors the guard in _selectedEditorText.
+      if (selection.end > text.length) { _findNext(editor); return; }
+      final selectedText = text.substring(selection.start, selection.end);
       if (_equalsQuery(selectedText, query)) {
         _replaceRangePreservingUndo(
           tab,
@@ -692,12 +793,17 @@ class _ScribSearchBarState extends State<ScribSearchBar> {
 
   void _replaceAllPreservingUndo(EditorTab tab, {required String newText}) {
     final oldSelection = tab.controller.selection;
+    // Assigning through controller.value skips the range validation the
+    // controller.selection setter performs, so BOTH endpoints have to be in
+    // range. Checking only the base let a select-all survive a shrinking
+    // Replace All, and the next Replace then threw a RangeError on every click.
+    final fits = oldSelection.baseOffset <= newText.length &&
+        oldSelection.extentOffset <= newText.length;
     tab.controller.value = TextEditingValue(
       text: newText,
       // Collapse selection to end of content if the previous cursor is out of range.
-      selection: oldSelection.baseOffset <= newText.length
-          ? oldSelection
-          : TextSelection.collapsed(offset: newText.length),
+      selection:
+          fits ? oldSelection : TextSelection.collapsed(offset: newText.length),
     );
   }
 }
