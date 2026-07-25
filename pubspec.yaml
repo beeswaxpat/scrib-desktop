@@ -1,4 +1,4 @@
-﻿name: scrib_desktop
+name: scrib_desktop
 description: "The encrypted Notepad. No tracking. No cloud. Just notes."
 publish_to: 'none'
 
@@ -31,7 +31,7 @@ dependencies:
   # unknownEmbedBuilder, the shortcut-collision workaround in editor_widget.dart)
   # are verified against this version and have changed between minor releases.
   # See ARCHITECTURE.md before bumping.
-  flutter_quill: 11.5.0
+  flutter_quill: 11.5.1
 
   # Desktop-specific
   window_manager: ^0.5.2
