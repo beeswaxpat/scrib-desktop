@@ -1,5 +1,8 @@
 version: 2
 updates:
+  # Actions are pinned to full commit SHAs in the workflows. Dependabot still
+  # bumps SHA pins and rewrites the trailing version comment, so pinning does
+  # not freeze them out of security updates.
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -11,6 +14,10 @@ updates:
       interval: weekly
     ignore:
       # Pinned at 11.5.0: embed mechanics, shortcut handling, and document
-      # change streams are verified against this exact version. Upgrades are
-      # done manually with full regression verification (see ARCHITECTURE.md).
+      # change streams are verified against this exact version. This used to be
+      # a blanket ignore, which also switched off 11.x patch and security
+      # releases for the editor core and its quill_* transitive chain. Only
+      # major bumps are held back now: an 11.x PR still runs the full suite,
+      # and 12.x stays a manual upgrade (see ARCHITECTURE.md).
       - dependency-name: flutter_quill
+        update-types: [ "version-update:semver-major" ]

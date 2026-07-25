@@ -72,6 +72,13 @@ IDI_APP_ICON            ICON                    "resources\\app_icon.ico"
 #define VERSION_AS_STRING "1.0.0"
 #endif
 
+// Properties > Details is the only provenance an unsigned binary offers, and
+// these strings were the unedited Flutter template: they named a reverse-DNS
+// package id as the publisher and carried the proprietary copyright notice
+// from the template, which contradicts the GPLv3 grant the project ships
+// under and shipped in every distributed binary. InternalName and
+// OriginalFilename stay as the real built filename. The version fields are
+// driven by the build and are left alone.
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION VERSION_AS_NUMBER
  PRODUCTVERSION VERSION_AS_NUMBER
@@ -89,13 +96,14 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.beeswaxpat" "\0"
-            VALUE "FileDescription", "scrib_desktop" "\0"
+            VALUE "CompanyName", "Beeswax Pat" "\0"
+            VALUE "FileDescription", "Scrib Desktop" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "scrib_desktop" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.beeswaxpat. All rights reserved." "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Beeswax Pat. Licensed under the GNU General Public License v3.0 or later." "\0"
             VALUE "OriginalFilename", "scrib_desktop.exe" "\0"
-            VALUE "ProductName", "scrib_desktop" "\0"
+            VALUE "ProductName", "Scrib Desktop" "\0"
+            VALUE "Comments", "https://github.com/beeswaxpat/scrib-desktop" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

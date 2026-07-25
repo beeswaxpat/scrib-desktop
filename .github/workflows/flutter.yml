@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ master, main ]
 
+# Nothing here writes to the repo. dependency-review-action needs contents:
+# read to compare the pull request's dependency graph against the base.
+permissions:
+  contents: read
+
 jobs:
   analyze-and-test:
     name: Analyze & test
@@ -13,15 +18,28 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: subosito/flutter-action@v2
+      # Advisory only: the ~90-package transitive graph is reachable from
+      # untrusted note content (image, archive, xml, flutter_svg all run over
+      # bytes that arrive inside a note), and nothing else in CI looks at
+      # dependencies. warn-only plus continue-on-error keeps an advisory (or a
+      # repo without the dependency graph enabled) from blocking a merge.
+      - name: Dependency review (advisory)
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          warn-only: true
+        continue-on-error: true
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
-          # Pinned for reproducible builds. A floating `stable` breaks the
-          # Windows build whenever a new Flutter framework release adds abstract
-          # members the pinned flutter_quill version doesn't yet implement. Bump
-          # this in lockstep with the flutter_quill dependency.
+          # Pinned so CI builds against one Flutter version. A floating
+          # `stable` breaks the Windows build whenever a new Flutter framework
+          # release adds abstract members the pinned flutter_quill version
+          # doesn't yet implement. Bump this in lockstep with the flutter_quill
+          # dependency.
           flutter-version: 3.38.6
           cache: true
 
@@ -33,8 +51,14 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      # Surfaces outdated (and therefore potentially advisory-bearing) packages
+      # in the log without gating the build.
+      - name: Outdated dependencies (advisory)
+        run: flutter pub outdated || echo "Outdated packages reported (advisory, not failing build)"
+        continue-on-error: true
+
       - name: Verify formatting (advisory)
-        run: dart format --output=none --set-exit-if-changed lib/ test/ || echo "Formatting differences detected (advisory — not failing build)"
+        run: dart format --output=none --set-exit-if-changed lib/ test/ || echo "Formatting differences detected (advisory, not failing build)"
         continue-on-error: true
 
       - name: Static analysis
@@ -50,15 +74,16 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
-          # Pinned for reproducible builds. A floating `stable` breaks the
-          # Windows build whenever a new Flutter framework release adds abstract
-          # members the pinned flutter_quill version doesn't yet implement. Bump
-          # this in lockstep with the flutter_quill dependency.
+          # Pinned so CI builds against one Flutter version. A floating
+          # `stable` breaks the Windows build whenever a new Flutter framework
+          # release adds abstract members the pinned flutter_quill version
+          # doesn't yet implement. Bump this in lockstep with the flutter_quill
+          # dependency.
           flutter-version: 3.38.6
           cache: true
 
@@ -69,7 +94,7 @@ jobs:
         run: flutter build windows --release
 
       - name: Upload release artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: scrib-desktop-windows-${{ github.sha }}
           path: build/windows/x64/runner/Release/
