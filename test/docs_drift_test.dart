@@ -38,6 +38,10 @@ void main() {
   });
 
   test('CLAUDE.md does not describe the Hive settings box as encrypted', () {
-    expect(read('CLAUDE.md'), isNot(contains('Hive encrypted')));
+    // CLAUDE.md is gitignored (maintainer-local), so it does not exist in a
+    // fresh clone or in CI. Assert only when it is actually present.
+    final file = File('CLAUDE.md');
+    if (!file.existsSync()) return;
+    expect(file.readAsStringSync(), isNot(contains('Hive encrypted')));
   });
 }
