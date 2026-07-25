@@ -27,8 +27,11 @@ dependencies:
   # Encryption â€” AES-256-CBC, PBKDF2-SHA256, HMAC-SHA256
   pointycastle: ^4.0.0
 
-  # Rich text editor
-  flutter_quill: ^11.0.0
+  # Rich text editor. PINNED exactly: embed mechanics (custom block embeds,
+  # unknownEmbedBuilder, the shortcut-collision workaround in editor_widget.dart)
+  # are verified against this version and have changed between minor releases.
+  # See ARCHITECTURE.md before bumping.
+  flutter_quill: 11.5.0
 
   # Desktop-specific
   window_manager: ^0.5.2
