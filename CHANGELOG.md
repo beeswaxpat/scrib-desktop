@@ -94,7 +94,11 @@ format and settings schema are unchanged**; existing files open untouched.
   editor enforces.
 - **Tag-triggered release workflow**: pushing a `v*` tag builds the Windows
   release, packages it as a zip with a SHA-256 checksum file, and publishes a
-  GitHub Release with generated notes.
+  GitHub Release with generated notes. The checksum is computed by the same
+  workflow job that builds and uploads the zip, so it detects a corrupted or
+  truncated download, not a compromised release: an attacker who could replace
+  the zip could publish a matching checksum with it. The binary is not
+  code-signed either. Build from source if you need stronger assurance.
 - ARCHITECTURE.md: module map, load-bearing invariants, and save-path routing
   for contributors.
 - Dependabot updates for GitHub Actions and pub (with `flutter_quill` kept
@@ -186,7 +190,9 @@ untouched.
   **locked**: launch never prompts for a password and never decrypts anything
   you did not ask for. The stored session records file paths only, never
   content or passwords. Toggle it in the View menu ("Reopen Tabs on Launch");
-  turning it off also deletes the stored session record.
+  turning it off also deletes the stored session record. (Deleting the record
+  removes the key from the settings database. Hive appends rather than
+  rewrites, so the superseded entries stay in the file until a compaction.)
 - **Command palette (`Ctrl+Shift+P`).** Fuzzy-search every command in the app:
   file operations, search, insert, view, theme, security, and tab navigation.
   Arrow keys plus Enter run a command without touching the mouse.
@@ -309,7 +315,9 @@ settings carry over untouched.
   on a `.txt` / `.rtf` previously wrote the new `.scrb` but left the original
   unencrypted file on disk. The original is now deleted once the encrypted copy
   is confirmed written (with a warning if it cannot be removed). Decrypting
-  likewise removes the now-stale `.scrb`. Covered by regression tests.
+  likewise removes the now-stale `.scrb`. Covered by regression tests. Removing
+  a file cannot guarantee its bytes are unrecoverable from free space, a
+  backup, a snapshot, or a synced folder; see SECURITY.md.
 
 ### Fixed
 - Edit-menu Undo / Redo / Select All and `Ctrl+Y` now always target the live

@@ -59,15 +59,21 @@ save flow; every other service is provider-free.
 
 ## Load-bearing invariants
 
-Breaking any of these corrupts or leaks user data. Every one of them has
-regression tests.
+Breaking any of these corrupts or leaks user data. Each has regression tests,
+with two known coverage gaps: the launch-time link gate is tested as a pure
+function (`format_utils_test.dart`) but not at its call site in
+`editor_widget.dart`, and no test asserts that `FileService` routes its writes
+through `AtomicWrite` rather than writing files directly.
 
 1. **Locked tabs are never written.** `EditorTab.isLocked` means the decrypted
    content and password are NOT in memory; the in-memory document is empty by
    design. Every save path must refuse a locked tab, otherwise an empty
    document overwrites the encrypted file on disk. Enforced in
    `EditorProvider._saveTabToDisk`, `saveActiveTab`, `saveActiveTabAs`,
-   `updateDeltaJson`, and `FileOperations.saveActive`.
+   `markTabSavedAs`, `changeActivePassword`, `updateDeltaJson`,
+   `EditorTab.markSaved`, and both `FileOperations` entry points. `markSaved`
+   needs its own check because a lock can land while a write is still in
+   flight, and the snapshot it would apply holds the decrypted note.
 
 2. **All writes are atomic.** Every file write goes through
    `AtomicWrite` (write to `<path>.scrib-tmp`, backup to `<path>.scrib-bak`,
@@ -81,8 +87,10 @@ regression tests.
    flips `EditorTab.isEncrypted` without touching `filePath`. Background saves
    (auto-save, save-all) must refuse any encryption/extension mismatch in
    either direction and leave the tab dirty. Only the manual save path
-   (`FileOperations.saveActive`) performs the extension swap
-   (`.scrb <-> .txt/.rtf`) and it notifies the user when it does.
+   performs the extension swap (`.scrb <-> .txt/.rtf`): `saveActive` for an
+   in-place save, and `saveAs` when it forces a `.scrb` onto a path the user
+   typed without one. Both ask before replacing an existing file at the
+   destination, and `saveActive` notifies the user after the swap.
 
 4. **Extension-mode matching in save routing.** A rich-text Delta must not be
    written verbatim into a `.txt` (the scrib_rich JSON envelope would corrupt
@@ -97,7 +105,10 @@ regression tests.
    against this exact version. Quill upgrades have changed embed and shortcut
    behavior between minor versions; an upgrade requires re-running the full
    test suite plus manual verification of tables, images, links, and every
-   documented shortcut inside a rich tab. The CI Flutter version is pinned in
+   documented shortcut inside a rich tab. `pubspec.yaml` declares the exact
+   version (`flutter_quill: 11.5.0`, no caret), so the pin holds at resolution
+   and not only in `pubspec.lock`, and `.github/dependabot.yml` ignores the
+   package so no automated PR crosses it. The CI Flutter version is pinned in
    lockstep (see `.github/workflows/*.yml`).
 
 6. **Link allowlist at BOTH ends.** Only `http`, `https`, and `mailto` URLs
@@ -116,21 +127,75 @@ regression tests.
 
 ## Save-path routing
 
-All writes funnel into two functions, and both enforce the invariants above:
+There is no single write function. Note content reaches disk through four
+writers (`_saveTabToDisk`, `saveActiveTabAs`, `changeActivePassword`, and the
+Delta-to-RTF writes `FileOperations` makes directly), plus the two bookkeeping
+calls that record what was written (`markSaved`, `markTabSavedAs`). Each one
+carries a different part of the invariants above. Read this list before adding
+a fifth writer.
+
+**`EditorProvider._saveTabToDisk`** is the background writer: auto-save, the
+quit backstop, the pre-lock save, and the in-place branch of the manual save
+all go through it. When the tab's state and the path's extension disagree it
+refuses (returns null, writes nothing) instead of adapting; changing the path
+to fit is the manual path's job alone. It takes the content snapshot BEFORE
+the first await and returns
+that `SavedContent` on success, so every routing decision, the bytes written,
+and what the tab is later marked clean against all agree with each other.
+
+**`EditorTab.markSaved(written)`** records the snapshot a completed write put
+on disk, not the live controller. It used to read the live content, so an edit
+typed during a save (an encrypted write is an isolate spawn plus PBKDF2 plus
+two flushed writes, well over 100ms) was marked clean and never reached disk:
+no dirty marker, no quit prompt, no backup. It returns early on a locked tab,
+because the snapshot holds the decrypted note and applying it would undo
+`lock()`'s wipe.
+
+**`EditorProvider.saveActiveTabAs`** writes to a path the caller chose, then
+rebinds the tab's `filePath`, `fileName`, `isEncrypted` and `password` to that
+write. The destination extension and any overwrite confirmation belong to the
+caller (`FileOperations`, or the untitled branch of `MainScreen._renameTab`),
+not to this method.
+
+**`EditorProvider.markTabSavedAs`** performs no write of its own: it records a
+write `FileOperations` already made through `FileService.writeRtfFile`, since
+the Delta-to-RTF conversion lives in the caller. It takes the target tab as an
+argument instead of reading `activeTab`, because the caller awaits dialogs and
+the write itself and the user can switch tabs meanwhile; resolving the target
+afterwards retargeted whichever tab happened to be active and dropped its
+password.
+
+**`EditorProvider.changeActivePassword`** re-encrypts in place through
+`FileService.writeScrbFile`. It is the only `writeScrbFile` caller outside
+`_saveTabToDisk`, so it repeats the `.scrb` path test itself (`hasScrbPath`),
+and it assigns `EditorTab.password` only after the write succeeds: with the
+old ordering, a failed write left the tab holding a password the UI had just
+said was not applied, and the next save silently re-keyed the file.
+
+**`FileOperations.saveActive` / `saveAs`** own the manual path. They are the
+only code allowed to change a file's extension, and every swap goes through
+the `confirmOverwrite` callback first, which fails closed: with no callback
+wired, the swap is refused rather than replacing a file the user never chose.
+Each swap branch also deletes the pre-swap original, so an unguarded swap
+would destroy two files. `saveAs` re-asks when it retargets the picker's path
+to `.scrb`, because the native replace prompt applied to a path that is no
+longer the destination.
 
 ```
 User action                     Route                              Refusal behavior
 -----------------------------   --------------------------------   -----------------
 Ctrl+S (manual save)            MainScreen._saveFile
                                   -> FileOperations.saveActive     Only path allowed to
-                                     -> saveActiveTab/-As           swap extensions;
-                                                                    asks before lossy
-                                                                    Delta->RTF writes
+                                     -> _saveTabToDisk (in place)   swap extensions; asks
+                                     -> saveActiveTabAs (swap)      before replacing a
+                                     -> writeRtfFile +              file and before a
+                                        markTabSavedAs (RTF)        lossy Delta->RTF write
 
 Ctrl+Shift+S (Save As)          MainScreen._saveFileAs
                                   -> FileOperations.saveAs         Reports failure
-                                                                    instead of marking
-                                                                    the tab clean
+                                     -> saveActiveTabAs             instead of marking
+                                     -> writeRtfFile +              the tab clean
+                                        markTabSavedAs (RTF)
 
 Auto-save timer                 EditorProvider._autoSaveAll
                                   -> _saveDirtyFileBackedTabs      Refuses mismatches;
@@ -152,7 +217,27 @@ Lock tab (Ctrl+L / auto-lock)   EditorProvider.lockTab
                                   -> _saveTabToDisk first          Any save failure
                                                                     keeps the tab
                                                                     UNLOCKED so edits
-                                                                    survive in memory
+                                                                    survive in memory;
+                                                                    isDirty is re-checked
+                                                                    AFTER that save, so
+                                                                    text typed while it
+                                                                    was in flight also
+                                                                    blocks the lock
+
+Change Password                 MainScreen._changePassword
+                                  -> changeActivePassword         Refuses a non-.scrb
+                                     -> FileService.writeScrbFile   path; keeps the old
+                                                                    password when the
+                                                                    write throws
+
+Rename tab (file-backed)        MainScreen._renameTab
+                                  -> File(old).rename(new)        Asks before replacing
+                                     -> updateTabFile               an existing file
+
+Rename tab (untitled)           MainScreen._renameTab
+                                  -> saveActiveTabAs              Writes into the
+                                                                    default save location
+                                                                    under the new name
 ```
 
 `_saveTabToDisk` (background writes) refuses: no path, locked tab, encrypted

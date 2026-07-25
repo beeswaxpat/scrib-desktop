@@ -26,15 +26,21 @@ flutter build windows --release
 
 **Requirements:** Flutter stable (CI pins 3.38.6; use that version for
 reproducible results), Windows 10+, Visual Studio 2022 with the Desktop C++
-workload. The `flutter_quill` dependency stays pinned at 11.5.0; see
+workload. The `flutter_quill` dependency is declared as an exact version in
+`pubspec.yaml` (`11.5.0`, no caret) and is excluded from Dependabot; see
 ARCHITECTURE.md for why upgrades need extra verification.
 
 ## Before Submitting a PR
 
-1. `flutter analyze` must report **0 issues**
-2. `flutter test` must pass
+1. `flutter analyze` must report **0 issues** (CI runs it with
+   `--fatal-infos --fatal-warnings`)
+2. `flutter test` must pass, and every behavior fix lands with a regression
+   test that fails on the old code
 3. `flutter build windows --release` must produce a clean build
 4. Keep commits focused: one logical change per PR
+
+The pull request template repeats the load-bearing invariants as a checklist;
+work through it rather than ticking it.
 
 ## Built With
 
