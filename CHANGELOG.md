@@ -4,6 +4,101 @@ All notable changes to Scrib Desktop are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.10.0] - 2026-07-25 - Save-completion integrity and security hardening
+
+A correctness and security release following a full multi-agent code review and
+an adversarial security review. No new features. **The `.scrb` file format and
+settings schema are unchanged**; existing files open untouched.
+
+Two of these fixes address silent data loss during ordinary editing. Updating
+is recommended.
+
+### Fixed
+
+**Save integrity**
+- **Text typed while a save was in progress was silently discarded.** A save
+  recorded the tab as clean against its live content rather than the bytes
+  actually written, so anything typed during the write (an encrypted save is
+  well over 100ms, and auto-save repeats every 30 seconds) was marked saved
+  without ever reaching disk. The dirty marker cleared and the quit prompt saw
+  nothing pending. Saves now record what was written, and a tab edited
+  mid-write stays dirty and is persisted by the next save.
+- **Encrypting or converting a file could destroy an unrelated file.** The
+  extension swaps behind `Ctrl+E` and the mode toggle chose a destination and
+  replaced whatever was there with no prompt and no backup, then deleted the
+  source. These saves now ask before replacing an existing file, and decline
+  rather than overwrite if the prompt cannot be shown.
+- Files changed on disk by another program are no longer overwritten without
+  warning. Background saves refuse and leave the tab dirty; a manual save asks
+  first. Previously a note left open across an external edit or a file sync was
+  replaced by the next auto-save.
+- Save As refuses a file another tab already has open, which previously left
+  both tabs overwriting each other.
+- Naming an untitled tab asks before replacing an existing file.
+- A tab that locks while a save is in flight is no longer left permanently
+  unsaveable.
+
+**Security**
+- **Encrypting an existing file left the original recoverable.** The plaintext
+  was deleted but not erased, so it remained readable in free space. It is now
+  overwritten before removal, along with any stray backup left by an
+  interrupted save. Recovery is still possible on SSDs, snapshotted volumes and
+  synced folders: see the threat model in README.md.
+- A note marked encrypted over a plaintext file can no longer be locked. Doing
+  so previously showed a lock screen over a file that was not encrypted and
+  could never be unlocked.
+- Changing a password no longer applies the new password when the re-encrypt
+  fails. Previously the interface reported failure while the next save quietly
+  re-encrypted the file with a password the user had been told was not applied.
+- Locking a tab now clears its undo history, the decoded images held in memory,
+  and the clipboard when it holds text copied from that note.
+- `Ctrl+click` shows a link's real destination before opening it, and blocked
+  links now say so instead of doing nothing.
+- The password strength meter accounts for common passwords, keyboard runs and
+  repeated characters. Some passwords it previously rated Strong now rate
+  lower.
+- Reads are capped at 64 MB, and hostile `.rtf`, table and image payloads are
+  bounded so a crafted note cannot hang or exhaust memory.
+
+**Rich text**
+- Coloured and highlighted text no longer has a stray space inserted on every
+  save to RTF, and the colours are now exported rather than dropped.
+- Table cell edits are no longer lost when a tab closes mid-edit, and copying a
+  table no longer causes edits to land in the wrong copy.
+- RTF import keeps the first paragraph of files without a font table, and keeps
+  numbering on text that legitimately begins with a number and a tab.
+
+**Search**
+- Whole-word search no longer skips matches that follow a rejected candidate,
+  and now recognises accented and non-Latin words. Replace All previously
+  corrupted them.
+- Replace no longer throws after a Replace All that ended on a trailing match.
+
+**Other**
+- Non-UTF-8 text files (`.log`, `.csv`, `.ini` from older Windows tools) open
+  instead of being refused.
+- Clearing recent files and turning off session restore now remove the stored
+  note paths from disk rather than leaving them recoverable in the settings
+  database.
+- A second copy of Scrib explains that one is already running instead of
+  exiting invisibly, and the quit sequence can no longer leave a window that
+  cannot be closed.
+
+### Changed
+- `flutter_quill` is pinned to exactly 11.5.0. It was documented as pinned, but
+  the constraint allowed any 11.x release.
+- Release builds publish provenance attestations, verifiable with
+  `gh attestation verify <zip> --repo beeswaxpat/scrib-desktop`. The published
+  checksum detects transfer corruption; it is not evidence of authenticity, and
+  the previous wording overstated it. Builds remain unsigned.
+- All GitHub Actions are pinned to commit SHAs, and release write access is
+  scoped to the publishing job.
+- README.md and SECURITY.md document the threat model accurately, including
+  hostile note files, the unsigned download, and Windows paging.
+
+### Tests
+- 533 to 613 tests.
+
 ## [1.9.0] - 2026-07-16 - Save integrity, exact find and replace, and RTF fidelity
 
 A correctness release across every layer: the save paths, rich-text find and

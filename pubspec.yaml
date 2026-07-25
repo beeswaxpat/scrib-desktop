@@ -2,7 +2,7 @@
 description: "The encrypted Notepad. No tracking. No cloud. Just notes."
 publish_to: 'none'
 
-version: 1.9.0+10
+version: 1.10.0+11
 
 environment:
   sdk: ^3.10.7
