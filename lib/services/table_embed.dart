@@ -14,6 +14,12 @@ class ScribTable {
   static const int maxRows = 60;
   static const int maxCols = 12;
 
+  /// Payload format version written by [toData]. [fromData] refuses a payload
+  /// declaring a HIGHER version: parsing it as v1 would drop the keys this
+  /// build does not know, and the next cell edit would write the truncated
+  /// payload back over the original.
+  static const int formatVersion = 1;
+
   /// Stable identity, used to keep cell focus across document rebuilds and to
   /// locate this table's offset in the document when committing edits.
   final String id;
@@ -57,7 +63,7 @@ class ScribTable {
 
   /// JSON-serializable form. [v] guards future format changes.
   Map<String, dynamic> toData() => {
-        'v': 1,
+        'v': formatVersion,
         'id': id,
         'rows': rows,
         'cols': cols,
@@ -73,6 +79,10 @@ class ScribTable {
       final Map<String, dynamic> map = data is String
           ? jsonDecode(data) as Map<String, dynamic>
           : Map<String, dynamic>.from(data as Map);
+
+      // A newer format is refused rather than downgraded: see [formatVersion].
+      final version = (map['v'] as num?)?.toInt() ?? formatVersion;
+      if (version > formatVersion) return null;
 
       final rawRows = (map['rows'] as num).toInt();
       final rawCols = (map['cols'] as num).toInt();
@@ -99,7 +109,7 @@ class ScribTable {
 
       final id = (map['id'] ?? '').toString();
       return ScribTable(
-        id: id.isEmpty ? 't${cells.hashCode}' : id,
+        id: id.isEmpty ? _derivedId(rows, cols, cells) : id,
         rows: rows,
         cols: cols,
         cells: cells,
@@ -107,6 +117,42 @@ class ScribTable {
     } catch (_) {
       return null;
     }
+  }
+
+  /// Stable id for a payload that carries none (hand-edited, written by another
+  /// tool, or by a pre-id build).
+  ///
+  /// The fallback used to be `cells.hashCode`, and List.hashCode is IDENTITY
+  /// hashing over a freshly allocated list, so every parse minted a DIFFERENT
+  /// id: the embed's ValueKey changed on every rebuild (destroying cell focus
+  /// and any armed debounce) and findTableOffset re-parsed to yet another id,
+  /// so no cell edit was ever committed. FNV-1a over the content is stable
+  /// across parses, and across sessions too (String.hashCode is seeded per run).
+  static String _derivedId(int rows, int cols, List<List<String>> cells) {
+    var h = 0x811c9dc5;
+    void mix(int byte) {
+      h = ((h ^ (byte & 0xFF)) * 0x01000193) & 0xFFFFFFFF;
+    }
+
+    void mixInt(int value) {
+      mix(value);
+      mix(value >> 8);
+      mix(value >> 16);
+    }
+
+    mixInt(rows);
+    mixInt(cols);
+    for (final row in cells) {
+      for (final cell in row) {
+        for (final unit in cell.codeUnits) {
+          mix(unit);
+          mix(unit >> 8);
+        }
+        mix(0x1f); // cell separator
+      }
+      mix(0x1e); // row separator
+    }
+    return 't${h.toRadixString(16)}';
   }
 
   /// Parses a table from the raw payload of a Delta custom-embed op, i.e. the
@@ -141,6 +187,17 @@ class ScribTable {
       BlockEmbed.custom(CustomBlockEmbed(kType, jsonEncode(toData())));
 
   // ── Structural edits (return a new table) ──────────────────────────────────
+
+  /// The same grid under a new [newId]. Used to re-mint a pasted copy that
+  /// arrived carrying the original table's id.
+  ScribTable withId(String newId) => ScribTable(
+        id: newId,
+        rows: rows,
+        cols: cols,
+        cells: [
+          for (final row in cells) [...row],
+        ],
+      );
 
   ScribTable withCell(int r, int c, String value) {
     if (r < 0 || r >= rows || c < 0 || c >= cols) return this;

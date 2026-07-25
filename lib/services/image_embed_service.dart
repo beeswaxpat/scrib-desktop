@@ -29,6 +29,13 @@ class ImageEmbedService {
   /// it modest. Most images downscale well under this.
   static const int maxEmbedBytes = 4 * 1024 * 1024;
 
+  /// Longest base64 payload that can decode within [maxEmbedBytes] (base64
+  /// packs 3 bytes into 4 characters). Checked BEFORE base64Decode allocates,
+  /// so the ceiling holds on the read path too: a `.scrb` can carry any payload
+  /// the insert path never saw (hand-edited, written by another tool, crafted),
+  /// and without this the decode cache's documented bound was enforced nowhere.
+  static const int maxEmbedBase64Chars = ((maxEmbedBytes + 2) ~/ 3) * 4;
+
   /// Longest-side pixel limit; larger raster images are downscaled on insert.
   static const int maxDimension = 2000;
 
@@ -183,8 +190,8 @@ class ImageEmbedService {
 
   // ── Decode cache (embed rendering) ─────────────────────────────────────────
 
-  /// Max entries in the decoded-bytes LRU. Each entry is at most
-  /// [maxEmbedBytes] raw bytes, so the cache is bounded at ~32 MB.
+  /// Max entries in the decoded-bytes LRU. [decodeDataUri] refuses anything
+  /// over [maxEmbedBytes], so the cache really is bounded at ~32 MB.
   static const int decodeCacheCapacity = 8;
 
   /// LRU of decoded data URIs, keyed by the URI string itself. Returning the
@@ -212,8 +219,36 @@ class ImageEmbedService {
     return decoded;
   }
 
-  @visibleForTesting
+  /// Drops every decoded image buffer. This is the purge hook for locking a
+  /// tab: the cache is process-global and strongly referenced, so without it
+  /// the decrypted bytes of an encrypted note's images stay resident long after
+  /// EditorTab.lock() has wiped the controller and the lock screen says the
+  /// content is no longer in memory. Costs a re-decode on unlock.
   static void clearDecodeCache() => _decodeCache.clear();
+
+  // ── Stored display width ───────────────────────────────────────────────────
+
+  /// Display bounds for an embedded image, in logical pixels.
+  static const double minDisplayWidth = 80;
+  static const double maxDisplayWidth = 1000;
+
+  static final RegExp _widthInStyle = RegExp(r'width:\s*([\d.]+)px');
+
+  /// The width an image embed carries in its CSS `style` attribute (the only
+  /// image attribute Quill's format rules accept), e.g. `width: 320px;`, or
+  /// null when it carries none.
+  ///
+  /// Clamped on READ as well as on write: the resize control clamps what it
+  /// stores, but a crafted or hand-edited style attribute carries any number it
+  /// likes and would otherwise lay the image out at that width.
+  static double? storedWidth(String? style) {
+    if (style == null) return null;
+    final match = _widthInStyle.firstMatch(style);
+    if (match == null) return null;
+    final parsed = double.tryParse(match.group(1)!);
+    if (parsed == null || !parsed.isFinite) return null;
+    return parsed.clamp(minDisplayWidth, maxDisplayWidth).toDouble();
+  }
 
   /// Decode target width in physical pixels for an embed displayed at
   /// [displayWidth] logical pixels. Clamped so a corrupt stored width can
@@ -234,6 +269,8 @@ class ImageEmbedService {
     final header = source.substring(5, comma); // e.g. image/png;base64
     if (!header.contains('base64')) return null;
     final mime = header.split(';').first;
+    // Size-check the payload in place: substring would already have copied it.
+    if (source.length - comma - 1 > maxEmbedBase64Chars) return null;
     try {
       final bytes = base64Decode(source.substring(comma + 1));
       // An empty payload can never render; null routes the embed straight to

@@ -111,9 +111,8 @@ class _ResizableImage extends StatefulWidget {
 }
 
 class _ResizableImageState extends State<_ResizableImage> {
-  static const double _minWidth = 80;
-  static const double _maxWidth = 1000;
-  static const double _defaultWidth = 360;
+  static const double _minWidth = ImageEmbedService.minDisplayWidth;
+  static const double _maxWidth = ImageEmbedService.maxDisplayWidth;
   static const double _step = 60;
 
   /// Display constraint when no width attribute is stored (matches the
@@ -135,16 +134,13 @@ class _ResizableImageState extends State<_ResizableImage> {
     return _decoded;
   }
 
-  static final _widthInStyle = RegExp(r'width:\s*([\d.]+)px');
-
   /// Width is stored in the embed's CSS `style` attribute (the only image
-  /// attribute Quill's format rules accept), e.g. `width: 320px;`.
+  /// attribute Quill's format rules accept), e.g. `width: 320px;`. The service
+  /// clamps it, so a crafted attribute cannot lay the image out at an arbitrary
+  /// width.
   double? _storedWidth() {
     final style = widget.node.style.attributes['style']?.value;
-    if (style is! String) return null;
-    final match = _widthInStyle.firstMatch(style);
-    if (match == null) return null;
-    return double.tryParse(match.group(1)!);
+    return ImageEmbedService.storedWidth(style is String ? style : null);
   }
 
   void _applyWidth(double w) {
@@ -162,7 +158,11 @@ class _ResizableImageState extends State<_ResizableImage> {
   }
 
   void _resize(double delta) {
-    final current = _storedWidth() ?? _defaultWidth;
+    // An unsized image is laid out at _defaultDisplayWidth, so that is the
+    // width to step from. Stepping from a smaller nominal default made the
+    // first "Larger" click land back on the constraint the image was already
+    // drawn at, and nothing moved.
+    final current = _storedWidth() ?? _defaultDisplayWidth;
     _applyWidth(current + delta);
   }
 

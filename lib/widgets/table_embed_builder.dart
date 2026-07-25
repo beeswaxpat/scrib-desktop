@@ -122,6 +122,65 @@ int? findTableOffset(QuillController controller, String id) {
   return found;
 }
 
+/// Writes [table] back over the live embed carrying its id, replacing the embed
+/// character in place. Returns false when the table is no longer in the
+/// document (deleted, or undone out from under the caller).
+///
+/// Free function rather than a State method so a pending edit can still be
+/// flushed after the widget is gone: [State.widget] is unusable once dispose()
+/// has run, so the caller captures the controller and the table first.
+bool commitTableEdit(QuillController controller, ScribTable table) {
+  if (controller.document.documentChangeObserver.isClosed) return false;
+  final offset = findTableOffset(controller, table.id);
+  if (offset == null) return false;
+  final sel = controller.selection;
+  controller.replaceText(
+    offset,
+    1,
+    table.toEmbed(),
+    sel.isValid ? sel : null,
+  );
+  return true;
+}
+
+/// Re-mints the id of every table embed that repeats an id already seen earlier
+/// in the document. Returns true if anything was rewritten.
+///
+/// Copy/paste re-inserts the sliced Delta verbatim (flutter_quill 11.5.0 has no
+/// hook that rewrites an embed payload on the way in), so a pasted table
+/// arrives carrying the ORIGINAL's id. [findTableOffset] returns the first
+/// match, so a cell edit made in the copy committed into the original and
+/// destroyed its data while the copy silently reverted on the next rebuild.
+/// Two id-less payloads with identical content derive the same id and collide
+/// the same way. The FIRST occurrence keeps the id, so an in-place edit of the
+/// original is unaffected.
+bool remintDuplicateTableIds(QuillController controller) {
+  if (controller.document.documentChangeObserver.isClosed) return false;
+  final seen = <String>{};
+  final duplicates = <int, ScribTable>{};
+  visitDocumentEmbeds(controller.document, (offset, embed) {
+    final parsed = tableFromEmbed(embed);
+    if (parsed != null && !seen.add(parsed.id)) {
+      duplicates[offset] = parsed;
+    }
+    return true;
+  });
+  if (duplicates.isEmpty) return false;
+
+  // Back to front so a rewrite can never invalidate an offset still to come.
+  final offsets = duplicates.keys.toList()..sort();
+  for (final offset in offsets.reversed) {
+    final sel = controller.selection;
+    controller.replaceText(
+      offset,
+      1,
+      duplicates[offset]!.withId(newTableId()).toEmbed(),
+      sel.isValid ? sel : null,
+    );
+  }
+  return true;
+}
+
 /// Renders Scrib table embeds as an editable grid. One builder handles all
 /// custom embeds and dispatches on the inner type.
 class ScribTableEmbedBuilder extends EmbedBuilder {
@@ -186,6 +245,11 @@ class _EditableTableState extends State<_EditableTable> {
   late List<List<TextEditingController>> _ctrls;
   late List<List<FocusNode>> _nodes;
   Timer? _debounce;
+
+  /// True from the moment an edit lands in [_table] until it has been written
+  /// back into the document. While it is set, _table is AHEAD of the document
+  /// and must not be reseeded from it.
+  bool _commitPending = false;
   bool _hovering = false;
   int _focusedRow = 0;
   int _focusedCol = 0;
@@ -195,11 +259,26 @@ class _EditableTableState extends State<_EditableTable> {
     super.initState();
     _table = widget.table;
     _buildCells();
+    if (!widget.readOnly) {
+      // A pasted table carries the id of the table it was copied from, so cell
+      // edits in one would commit into the other. Repair after this frame: the
+      // document must not be mutated while it is being built.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) remintDuplicateTableIds(widget.controller);
+      });
+    }
   }
 
   @override
   void didUpdateWidget(_EditableTable old) {
     super.didUpdateWidget(old);
+    // While a commit is pending, _table legitimately holds NEWER content than
+    // the document does (nothing has been written yet), so the divergence test
+    // below reads as an external edit. flutter_quill rebuilds on selection-only
+    // changes, so clicking away or pressing an arrow key inside the debounce
+    // window reseeded the cells back to the stale value, destroyed focus, and
+    // then let the armed timer commit the reverted text.
+    if (_commitPending) return;
     // Only reseed if the document changed the table out from under us (undo,
     // external edit). Our own debounced commits produce an identical table, so
     // we keep the existing controllers and focus.
@@ -249,6 +328,21 @@ class _EditableTableState extends State<_EditableTable> {
 
   @override
   void dispose() {
+    // A pending edit lives ONLY in _table: nothing has touched the document, so
+    // tab.deltaJson is unchanged and the tab is not even dirty. Cancelling here
+    // dropped the text with no unsaved-changes prompt anywhere, and disposal is
+    // routine (a tab switch tears every table down for the deferred-build
+    // placeholder frame). Flush instead of cancel.
+    //
+    // On a microtask rather than inline: dispose() runs inside the locked
+    // widget-tree teardown, where mutating the document would mark a still-live
+    // editor as needing a build. The controller and the table are captured
+    // because `widget` is unusable once dispose() has returned.
+    if (_commitPending) {
+      final controller = widget.controller;
+      final pending = _table;
+      scheduleMicrotask(() => commitTableEdit(controller, pending));
+    }
     _debounce?.cancel();
     _disposeCells();
     super.dispose();
@@ -256,6 +350,7 @@ class _EditableTableState extends State<_EditableTable> {
 
   void _onCellChanged(int r, int c, String value) {
     _table = _table.withCell(r, c, value);
+    _commitPending = true;
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 500), _commit);
   }
@@ -264,28 +359,21 @@ class _EditableTableState extends State<_EditableTable> {
   /// and focus nodes are owned by this State (kept stable via the embed's
   /// ValueKey), so the resulting rebuild does not disturb the cursor.
   void _commit() {
-    final offset = findTableOffset(widget.controller, _table.id);
-    if (offset == null) {
+    _commitPending = false;
+    if (!commitTableEdit(widget.controller, _table) && kDebugMode) {
       // Only reachable when the embed vanished from the document (deleted or
       // undone out from under us). Surface it in debug builds so a lost cell
       // edit is never completely silent.
-      if (kDebugMode) {
-        debugPrint(
-            'ScribTable ${_table.id}: embed not found, cell edit not committed');
-      }
-      return;
+      debugPrint(
+          'ScribTable ${_table.id}: embed not found, cell edit not committed');
     }
-    final sel = widget.controller.selection;
-    widget.controller.replaceText(
-      offset,
-      1,
-      _table.toEmbed(),
-      sel.isValid ? sel : null,
-    );
   }
 
   void _structuralChange(ScribTable next) {
     _debounce?.cancel();
+    // The new shape reaches the document only in the post-frame commit below,
+    // so until then _table is ahead of it exactly as a debounced cell edit is.
+    _commitPending = true;
     setState(() {
       _table = next;
       _disposeCells();
@@ -314,6 +402,9 @@ class _EditableTableState extends State<_EditableTable> {
 
   void _deleteTable() {
     _debounce?.cancel();
+    // The table is going away: a queued edit must not be flushed back into the
+    // document (or into whatever ends up carrying this id) on dispose.
+    _commitPending = false;
     final offset = findTableOffset(widget.controller, _table.id);
     if (offset == null) return;
     widget.controller.replaceText(

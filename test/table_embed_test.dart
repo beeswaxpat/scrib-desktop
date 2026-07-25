@@ -58,6 +58,17 @@ void main() {
       expect(single.removeColumn(0).cols, 1);
     });
 
+    test('withId keeps the grid and swaps only the identity', () {
+      final t = ScribTable.empty(rows: 2, cols: 2, id: 'old').withCell(1, 0, 'v');
+      final fresh = t.withId('new');
+      expect(fresh.id, 'new');
+      expect(fresh.contentEquals(t), isTrue);
+      expect(t.id, 'old'); // original untouched
+      // The copy must not share cell storage with the original.
+      expect(fresh.withCell(1, 0, 'changed').cellAt(1, 0), 'changed');
+      expect(t.cellAt(1, 0), 'v');
+    });
+
     test('contentEquals ignores id', () {
       final a = ScribTable.empty(rows: 2, cols: 2, id: 'a').withCell(0, 0, 'x');
       final b = ScribTable.empty(rows: 2, cols: 2, id: 'b').withCell(0, 0, 'x');
@@ -203,6 +214,79 @@ void main() {
       final asMap = {ScribTable.kType: t.toData()};
       final fromMap = ScribTable.fromCustomEmbedData(asMap)!;
       expect(fromMap.contentEquals(t), isTrue);
+    });
+
+    test('an id-less payload parses to the SAME id every time', () {
+      // Regression: the fallback used to be cells.hashCode, and List.hashCode
+      // is identity hashing over a freshly allocated list, so every parse
+      // minted a new id — the embed's ValueKey changed on every rebuild and
+      // findTableOffset could never match, so cell edits were never committed.
+      final payload = {
+        'rows': 2,
+        'cols': 2,
+        'cells': [
+          ['a', 'b'],
+          ['c', 'd'],
+        ],
+      };
+      final first = ScribTable.fromData(payload)!;
+      final second = ScribTable.fromData(payload)!;
+      final fromJson = ScribTable.fromData(jsonEncode(payload))!;
+
+      expect(first.id, isNotEmpty);
+      expect(second.id, first.id);
+      expect(fromJson.id, first.id);
+    });
+
+    test('the derived id follows the content, not the allocation', () {
+      ScribTable parse(String a) => ScribTable.fromData({
+            'rows': 1,
+            'cols': 2,
+            'cells': [
+              [a, 'z'],
+            ],
+          })!;
+      expect(parse('one').id, isNot(parse('two').id));
+      expect(parse('one').id, parse('one').id);
+    });
+
+    test('a payload from a NEWER format version is refused, not downgraded', () {
+      // Parsing it as v1 would drop the keys this build does not know, and the
+      // next cell edit would write the truncated payload back over the note.
+      expect(
+        ScribTable.fromData({
+          'v': ScribTable.formatVersion + 1,
+          'rows': 1,
+          'cols': 1,
+          'id': 'future',
+          'cells': [
+            ['x'],
+          ],
+        }),
+        isNull,
+      );
+      // The current version, and a payload with no version at all, still parse.
+      expect(
+          ScribTable.fromData({
+            'v': ScribTable.formatVersion,
+            'rows': 1,
+            'cols': 1,
+            'id': 'now',
+            'cells': [
+              ['x'],
+            ],
+          }),
+          isNotNull);
+      expect(
+          ScribTable.fromData({
+            'rows': 1,
+            'cols': 1,
+            'id': 'legacy',
+            'cells': [
+              ['x'],
+            ],
+          }),
+          isNotNull);
     });
 
     test('fromData clamps hostile dimensions before allocating cells', () {

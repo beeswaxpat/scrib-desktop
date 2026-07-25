@@ -74,6 +74,103 @@ void main() {
     expect(count, 1);
   });
 
+  /// Every table embed in [c], in document order.
+  List<ScribTable> tablesIn(QuillController c) {
+    final found = <ScribTable>[];
+    visitDocumentEmbeds(c.document, (offset, embed) {
+      final t = tableFromEmbed(embed);
+      if (t != null) found.add(t);
+      return true;
+    });
+    return found;
+  }
+
+  /// Inserts [table] twice, the second time byte-for-byte as a paste does.
+  QuillController withPastedDuplicate(ScribTable table) {
+    final controller = QuillController.basic();
+    insertTableEmbed(controller, table);
+    controller.updateSelection(
+      TextSelection.collapsed(offset: controller.document.length - 1),
+      ChangeSource.local,
+    );
+    insertTableEmbed(controller, table);
+    return controller;
+  }
+
+  test('commitTableEdit reports whether the table was still there', () {
+    final controller = QuillController.basic();
+    final table = ScribTable.empty(rows: 1, cols: 1, id: 'live');
+    insertTableEmbed(controller, table);
+
+    expect(commitTableEdit(controller, table.withCell(0, 0, 'saved')), isTrue);
+    expect(extract(controller, 'live')!.cellAt(0, 0), 'saved');
+
+    final gone = ScribTable.empty(rows: 1, cols: 1, id: 'never-inserted');
+    expect(commitTableEdit(controller, gone), isFalse);
+  });
+
+  test('a pasted duplicate id is re-minted, and the original keeps its id', () {
+    // Quill pastes the sliced Delta verbatim, so a copied table arrives with
+    // the ORIGINAL's id. findTableOffset returns the first match, so a cell
+    // edit in the copy used to commit into the original and destroy its data.
+    final table =
+        ScribTable.empty(rows: 1, cols: 1, id: 'dup').withCell(0, 0, 'original');
+    final controller = withPastedDuplicate(table);
+    expect(tablesIn(controller).map((t) => t.id), ['dup', 'dup'],
+        reason: 'precondition: the paste really does duplicate the id');
+
+    expect(remintDuplicateTableIds(controller), isTrue);
+
+    final after = tablesIn(controller);
+    expect(after.length, 2);
+    expect(after.first.id, 'dup', reason: 'the first occurrence keeps the id');
+    expect(after.last.id, isNot('dup'));
+    expect(after.first.cellAt(0, 0), 'original');
+    expect(after.last.cellAt(0, 0), 'original');
+
+    // Each table is now independently addressable: editing the copy leaves the
+    // original alone.
+    expect(
+      commitTableEdit(controller, after.last.withCell(0, 0, 'copy only')),
+      isTrue,
+    );
+    final edited = tablesIn(controller);
+    expect(edited.first.cellAt(0, 0), 'original');
+    expect(edited.last.cellAt(0, 0), 'copy only');
+  });
+
+  test('re-minting is a no-op when every id is already unique', () {
+    final controller = QuillController.basic();
+    insertTableEmbed(controller, ScribTable.empty(rows: 1, cols: 1, id: 'a'));
+    controller.updateSelection(
+      TextSelection.collapsed(offset: controller.document.length - 1),
+      ChangeSource.local,
+    );
+    insertTableEmbed(controller, ScribTable.empty(rows: 1, cols: 1, id: 'b'));
+
+    expect(remintDuplicateTableIds(controller), isFalse);
+    expect(tablesIn(controller).map((t) => t.id), ['a', 'b']);
+  });
+
+  test('two id-less tables with identical content are separated too', () {
+    // Their ids are derived from content, so they collide by construction.
+    final payload = {
+      'rows': 1,
+      'cols': 1,
+      'cells': [
+        ['same'],
+      ],
+    };
+    final table = ScribTable.fromData(payload)!;
+    final controller = withPastedDuplicate(table);
+    expect(tablesIn(controller)[0].id, tablesIn(controller)[1].id);
+
+    expect(remintDuplicateTableIds(controller), isTrue);
+    final after = tablesIn(controller);
+    expect(after.first.id, isNot(after.last.id));
+    expect(after.every((t) => t.cellAt(0, 0) == 'same'), isTrue);
+  });
+
   test('deleting a table removes it from the document', () {
     final controller = QuillController.basic();
     final table = ScribTable.empty(rows: 2, cols: 2, id: 'gone');

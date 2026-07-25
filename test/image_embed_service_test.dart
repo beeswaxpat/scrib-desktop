@@ -93,6 +93,24 @@ void main() {
       expect(ImageEmbedService.decodeDataUri('data:,plain'), isNull);
     });
 
+    test('refuses a payload larger than the embed ceiling', () {
+      // maxEmbedBytes used to be enforced only when INSERTING an image, so a
+      // .scrb carrying an oversized data URI (hand-edited, another tool, or
+      // crafted) allocated the whole thing on open and the decode cache's
+      // documented ~32 MB bound was enforced nowhere.
+      final oversized = 'data:image/png;base64,'
+          '${'A' * (ImageEmbedService.maxEmbedBase64Chars + 4)}';
+      expect(ImageEmbedService.decodeDataUri(oversized), isNull);
+    });
+
+    test('the ceiling still admits an image at the insert limit', () {
+      // base64 packs 3 bytes into 4 chars, so an image of exactly
+      // maxEmbedBytes (which the insert path accepts) must still decode.
+      final atLimit = (ImageEmbedService.maxEmbedBytes / 3).ceil() * 4;
+      expect(ImageEmbedService.maxEmbedBase64Chars,
+          greaterThanOrEqualTo(atLimit));
+    });
+
     test('cached variant refuses the same invalid payloads', () {
       ImageEmbedService.clearDecodeCache();
       expect(

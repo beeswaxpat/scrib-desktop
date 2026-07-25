@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_quill/flutter_quill.dart';
+import 'package:scrib_desktop/services/image_embed_service.dart';
 
 /// Image resizing stores a `width` attribute on the image embed via
 /// `controller.formatText`. This verifies that attribute is applied and that it
@@ -38,5 +39,27 @@ void main() {
     expect(styleValue, isNotNull, reason: 'style should persist on the embed');
     expect(styleValue, contains('width: 320px'),
         reason: 'stored width should round-trip');
+  });
+
+  group('storedWidth', () {
+    test('reads a normal stored width back unchanged', () {
+      expect(ImageEmbedService.storedWidth('width: 320px;'), 320.0);
+      expect(ImageEmbedService.storedWidth('width:320px'), 320.0);
+    });
+
+    test('clamps a crafted width instead of laying out at it', () {
+      // The resize control clamps what it WRITES, but a hand-edited or crafted
+      // style attribute carries any number, and it used to be honoured as-is.
+      expect(ImageEmbedService.storedWidth('width: 999999px;'),
+          ImageEmbedService.maxDisplayWidth);
+      expect(ImageEmbedService.storedWidth('width: 0.5px;'),
+          ImageEmbedService.minDisplayWidth);
+    });
+
+    test('returns null when there is no usable width', () {
+      expect(ImageEmbedService.storedWidth(null), isNull);
+      expect(ImageEmbedService.storedWidth('color: red;'), isNull);
+      expect(ImageEmbedService.storedWidth('width: ...px;'), isNull);
+    });
   });
 }

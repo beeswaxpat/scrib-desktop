@@ -47,6 +47,15 @@ void main() {
       expect(identical(zero.bytes, again.bytes), isTrue);
     });
 
+    test('an oversized payload is refused, so the LRU bound really holds', () {
+      // The capacity comment claims ~32 MB (8 x maxEmbedBytes). That is only
+      // true if the READ path refuses anything bigger, which it did not.
+      final oversized = 'data:image/png;base64,'
+          '${'A' * (ImageEmbedService.maxEmbedBase64Chars + 4)}';
+      expect(ImageEmbedService.decodeDataUriCached(oversized), isNull);
+      expect(ImageEmbedService.decodeDataUriCached(oversized), isNull);
+    });
+
     test('invalid URIs return null and are not cached', () {
       expect(ImageEmbedService.decodeDataUriCached('nonsense'), isNull);
       expect(ImageEmbedService.decodeDataUriCached('data:image/png;base64'),
