@@ -804,9 +804,15 @@ class _MainScreenState extends State<MainScreen> {
         editor,
         passwordForNewEncryption: password,
         confirmLossyRtf: () => _confirmLossyRtfSave(context),
+        confirmOverwrite: (p) => _confirmOverwrite(context, p),
       );
       if (!result.ok) {
-        if (result.error != 'Cancelled' && context.mounted) {
+        if (!context.mounted) return;
+        if (result.error == saveOverwriteDeclined) {
+          // The user declined the replacement, so nothing was written and the
+          // tab is still dirty. Say so — silence after Ctrl+S reads as success.
+          _showSnack(context, 'Not saved — the existing file was kept.');
+        } else if (result.error != 'Cancelled') {
           _showSnack(context, 'Could not save file');
         }
         return;
@@ -841,6 +847,7 @@ class _MainScreenState extends State<MainScreen> {
           return showSetPasswordDialog(context);
         },
         confirmLossyRtf: () => _confirmLossyRtfSave(context),
+        confirmOverwrite: (p) => _confirmOverwrite(context, p),
         // Surface the encryption progress overlay only for actual .scrb
         // writes, and BEFORE the slow key derivation starts (setting it after
         // the awaited save completes showed nothing at all).
@@ -852,7 +859,10 @@ class _MainScreenState extends State<MainScreen> {
         },
       );
       if (!result.ok) {
-        if (result.error != null && result.error != 'Cancelled' && context.mounted) {
+        if (!context.mounted) return;
+        if (result.error == saveOverwriteDeclined) {
+          _showSnack(context, 'Not saved — the existing file was kept.');
+        } else if (result.error != null && result.error != 'Cancelled') {
           _showSnack(context, 'Could not save file');
         }
         return;
@@ -860,6 +870,21 @@ class _MainScreenState extends State<MainScreen> {
     } finally {
       if (processing) _setProcessing(null);
     }
+  }
+
+  /// Confirmation shown before a save writes over a DIFFERENT file that the
+  /// user did not pick — the extension swaps behind Ctrl+E and the mode toggle
+  /// choose their own destination, and the write replaces it outright.
+  Future<bool> _confirmOverwrite(BuildContext context, String path) {
+    if (!context.mounted) return Future.value(false);
+    final name = path.split(Platform.pathSeparator).last;
+    return showScribConfirm(
+      context,
+      title: 'Replace File?',
+      message: 'A file named "$name" already exists in this folder. '
+          'Saving will replace it. Replace it?',
+      confirmLabel: 'Replace',
+    );
   }
 
   /// Confirmation shown before any Delta-to-RTF write that would drop image

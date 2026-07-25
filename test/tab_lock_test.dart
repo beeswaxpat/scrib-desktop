@@ -216,7 +216,11 @@ void main() {
       final p = await writeScrb('a.scrb', 'secret', 'pw');
       final tab = editor.addLockedTab(p);
 
-      editor.markTabSavedAs('${tmp.path}${Platform.pathSeparator}else.txt');
+      editor.markTabSavedAs(
+        tab,
+        '${tmp.path}${Platform.pathSeparator}else.txt',
+        tab.snapshotForSave(),
+      );
 
       expect(tab.filePath, p,
           reason: 'a locked tab must never be re-pointed at a new path');

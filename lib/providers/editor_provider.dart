@@ -71,6 +71,39 @@ String extractSearchableDeltaText(String deltaJson) {
   }
 }
 
+/// The exact content one write committed to disk, captured BEFORE the write
+/// starts so that [EditorTab.markSaved] records what actually landed rather
+/// than whatever the user has typed since.
+///
+/// LOAD-BEARING: a save is not instantaneous — an encrypted write is an
+/// isolate spawn plus PBKDF2 key derivation plus two forced flushes, and the
+/// auto-save timer repeats it every 30s. Marking a tab clean against its
+/// *live* content silently discards everything typed during that window: the
+/// dirty flag clears, the tab-title asterisk disappears, and the quit backstop
+/// reports nothing pending. Every write path must thread its snapshot through
+/// to markSaved so an edit made mid-write leaves the tab dirty and is
+/// persisted by the next save.
+class SavedContent {
+  final EditorMode mode;
+  final String plainText;
+  final String deltaJson;
+
+  const SavedContent({
+    required this.mode,
+    required this.plainText,
+    required this.deltaJson,
+  });
+
+  /// The bytes this snapshot serializes to, mirroring
+  /// [EditorTab.getSaveContent] but frozen at snapshot time.
+  String get fileContent {
+    if (mode == EditorMode.richText && deltaJson.isNotEmpty) {
+      return '{"scrib_rich":$deltaJson}';
+    }
+    return plainText;
+  }
+}
+
 /// Snapshot of a tab's content before a destructive operation (mode toggle).
 /// Lets us offer the user a one-step revert if they toggled by mistake.
 class EditorSnapshot {
@@ -140,11 +173,34 @@ class EditorTab {
 
   String get displayName => isDirty ? '$fileName *' : fileName;
 
-  void markSaved() {
-    if (mode == EditorMode.richText) {
-      savedDeltaJson = deltaJson;
+  /// Freeze the content a write is about to persist. Callers must take this
+  /// BEFORE awaiting the write and pass it back to [markSaved].
+  SavedContent snapshotForSave() => SavedContent(
+        mode: mode,
+        plainText: controller.text,
+        deltaJson: deltaJson,
+      );
+
+  /// Record [written] — the content a completed write actually put on disk —
+  /// as this tab's saved state.
+  ///
+  /// Takes the snapshot rather than re-reading the live controller, so an edit
+  /// made while the write was in flight leaves the tab dirty instead of being
+  /// silently marked saved and lost. If the mode changed mid-write, the tab
+  /// also stays dirty: the marker is applied to the mode that was written, and
+  /// the other mode's dirty comparison still fails.
+  void markSaved(SavedContent written) {
+    // A lock can land while a save is still in flight (the idle auto-lock runs
+    // unattended, and an encrypted write takes >100ms). [written] holds the
+    // DECRYPTED note, so applying it now would undo lock()'s wipe — seeding
+    // plaintext back into a locked tab — and pin the tab permanently dirty,
+    // since every save path refuses locked tabs and could never clean it
+    // again. The bytes are already on disk; the lock stands.
+    if (isLocked) return;
+    if (written.mode == EditorMode.richText) {
+      savedDeltaJson = written.deltaJson;
     } else {
-      savedContent = controller.text;
+      savedContent = written.plainText;
     }
     // A successful save invalidates any previous mode-toggle snapshot —
     // once committed to disk, the "pre-toggle" content is no longer something
@@ -322,8 +378,9 @@ class EditorProvider extends ChangeNotifier {
     for (final tab in List.of(_tabs)) {
       if (!tab.isDirty || tab.filePath == null) continue;
       try {
-        if (await _saveTabToDisk(tab)) {
-          tab.markSaved();
+        final written = await _saveTabToDisk(tab);
+        if (written != null) {
+          tab.markSaved(written);
           saved = true;
         }
       } catch (e) {
@@ -362,42 +419,50 @@ class EditorProvider extends ChangeNotifier {
   ///
   /// Refused tabs stay dirty, so the quit flow's saveAllSaveable backstop
   /// keeps refusing to discard them. Throws on I/O failure.
-  Future<bool> _saveTabToDisk(EditorTab tab) async {
+  /// Returns the [SavedContent] that reached disk, or null when the write was
+  /// refused. Callers pass the result straight to [EditorTab.markSaved] so the
+  /// tab is marked clean against the bytes written, not against content the
+  /// user may have typed while the write was in flight.
+  Future<SavedContent?> _saveTabToDisk(EditorTab tab) async {
     final path = tab.filePath;
-    if (path == null) return false;
+    if (path == null) return null;
     // A locked tab's in-memory content is empty by design — writing it would
     // destroy the encrypted file. Locked tabs are never saved.
-    if (tab.isLocked) return false;
+    if (tab.isLocked) return null;
     final lower = path.toLowerCase();
     final isScrbPath = lower.endsWith('.scrb');
-    final content = tab.getSaveContent();
+    // Snapshot first: every routing decision below and the bytes written must
+    // agree with each other and with what markSaved records.
+    final written = tab.snapshotForSave();
+    final content = written.fileContent;
 
     if (tab.isEncrypted) {
-      if (tab.password == null) return false;
-      if (!isScrbPath) return false; // ciphertext only ever goes into .scrb
+      if (tab.password == null) return null;
+      if (!isScrbPath) return null; // ciphertext only ever goes into .scrb
       await _fileService.writeScrbFile(path, content, tab.password!);
-      return true;
+      return written;
     }
 
-    if (isScrbPath) return false; // plaintext never goes into a .scrb
+    if (isScrbPath) return null; // plaintext never goes into a .scrb
 
     if (lower.endsWith('.rtf')) {
-      if (tab.mode != EditorMode.richText || tab.deltaJson.isEmpty) {
-        return false; // plain text into a .rtf produces a headerless file
+      if (written.mode != EditorMode.richText || written.deltaJson.isEmpty) {
+        return null; // plain text into a .rtf produces a headerless file
       }
-      if (deltaHasEmbeds(tab.deltaJson)) {
-        return false; // lossy write — needs the manual path's confirmation
+      if (deltaHasEmbeds(written.deltaJson)) {
+        return null; // lossy write — needs the manual path's confirmation
       }
-      await _fileService.writeRtfFile(path, RtfService.deltaToRtf(tab.deltaJson));
-      return true;
+      await _fileService.writeRtfFile(
+          path, RtfService.deltaToRtf(written.deltaJson));
+      return written;
     }
 
-    if (tab.mode == EditorMode.richText && tab.deltaJson.isNotEmpty) {
-      return false; // scrib_rich envelope would corrupt the plain file
+    if (written.mode == EditorMode.richText && written.deltaJson.isNotEmpty) {
+      return null; // scrib_rich envelope would corrupt the plain file
     }
 
     await _fileService.writeTxtFile(path, content);
-    return true;
+    return written;
   }
 
   // Getters
@@ -426,14 +491,20 @@ class EditorProvider extends ChangeNotifier {
       // so a throw here would both destroy unsaved edits and escape as an
       // unhandled async exception.
       try {
-        if (!await _saveTabToDisk(tab)) return false;
+        final written = await _saveTabToDisk(tab);
+        if (written == null) return false;
+        tab.markSaved(written);
       } catch (e) {
         if (kDebugMode) {
           debugPrint('Pre-lock save failed for ${tab.fileName}: $e');
         }
         return false;
       }
-      tab.markSaved();
+      // The user can type while the pre-lock save is in flight (an encrypted
+      // write takes well over 100ms, and the idle auto-lock fires unattended).
+      // Those edits are NOT on disk, and lock() is about to wipe them, so
+      // refuse the lock and let the next save pick them up.
+      if (tab.isDirty) return false;
     }
     tab.lock();
     _invalidateActiveText();
@@ -504,9 +575,10 @@ class EditorProvider extends ChangeNotifier {
     if (tab == null || !tab.isEncrypted || tab.isLocked) return false;
     tab.password = newPassword;
     if (tab.filePath != null) {
+      final written = tab.snapshotForSave();
       await _fileService.writeScrbFile(
-          tab.filePath!, tab.getSaveContent(), newPassword);
-      tab.markSaved();
+          tab.filePath!, written.fileContent, newPassword);
+      tab.markSaved(written);
     }
     notifyListeners();
     return true;
@@ -957,8 +1029,9 @@ class EditorProvider extends ChangeNotifier {
       return false; // Need "Save As" - caller should handle
     }
 
-    if (!await _saveTabToDisk(tab)) return false;
-    tab.markSaved();
+    final written = await _saveTabToDisk(tab);
+    if (written == null) return false;
+    tab.markSaved(written);
     notifyListeners();
     return true;
   }
@@ -968,7 +1041,8 @@ class EditorProvider extends ChangeNotifier {
     final tab = activeTab;
     if (tab == null || tab.isLocked) return false;
 
-    final content = tab.getSaveContent();
+    final written = tab.snapshotForSave();
+    final content = written.fileContent;
 
     if (encrypted && password != null) {
       await _fileService.writeScrbFile(path, content, password);
@@ -984,26 +1058,38 @@ class EditorProvider extends ChangeNotifier {
 
     tab.filePath = path;
     tab.fileName = _fileService.getFileName(path);
-    tab.markSaved();
+    tab.markSaved(written);
     await _settingsService.addRecentFile(path);
     notifyListeners();
     return true;
   }
 
-  /// Mark active tab as saved to a new path (used for RTF save).
+  /// Mark [tab] as saved to a new path (used for RTF save, where the caller
+  /// performed the Delta-to-RTF conversion and the write itself).
+  ///
+  /// [written] must be the snapshot the caller took BEFORE converting and
+  /// writing, so an edit made during the write leaves the tab dirty rather
+  /// than being marked saved against bytes that never landed.
+  ///
+  /// [tab] is passed explicitly rather than read from [activeTab]: the caller
+  /// awaits dialogs and the write itself, and the user can switch tabs during
+  /// those awaits. Resolving the target here would retarget whatever tab is
+  /// active NOW at the written path and record ANOTHER tab's content against
+  /// it — corrupting the dirty state of both. A tab that was closed mid-write
+  /// is no longer in [_tabs] and is skipped.
+  ///
   /// Recent-files update is fire-and-forget — not waiting on Hive before
   /// notifying listeners keeps the UI snappy on save.
-  void markTabSavedAs(String path) {
-    final tab = activeTab;
+  void markTabSavedAs(EditorTab tab, String path, SavedContent written) {
     // The isLocked guard keeps the "every save path refuses locked tabs"
     // invariant local: without it, a caller reaching this on a locked tab
     // would silently convert it into an "unencrypted, saved" tab.
-    if (tab == null || tab.isLocked) return;
+    if (!_tabs.contains(tab) || tab.isLocked) return;
     tab.filePath = path;
     tab.fileName = _fileService.getFileName(path);
     tab.isEncrypted = false;
     tab.password = null;
-    tab.markSaved();
+    tab.markSaved(written);
     unawaited(_settingsService.addRecentFile(path));
     notifyListeners();
   }

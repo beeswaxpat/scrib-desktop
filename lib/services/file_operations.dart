@@ -2,9 +2,17 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import '../providers/editor_provider.dart';
+import 'atomic_write.dart' show canonicalPath;
 import 'file_service.dart';
 import 'rtf_service.dart';
 import 'settings_service.dart';
+
+/// Error string returned when the user declined to replace an existing file at
+/// an extension-swap destination. Distinct from a plain 'Cancelled' so the UI
+/// can tell the user nothing was saved: they pressed Ctrl+S and the tab is
+/// still dirty (and, after Ctrl+E, still flagged encrypted over a plaintext
+/// path), which is not obvious from the dialog alone.
+const String saveOverwriteDeclined = 'Overwrite declined';
 
 /// Outcome of a save / save-as operation. The `extensionChanged` flag tells
 /// the caller whether the on-disk file was renamed to a different extension
@@ -58,10 +66,15 @@ class FileOperations {
   /// [confirmLossyRtf] is asked before any Delta→RTF write whose Delta carries
   /// image/table embeds, because RTF conversion drops them. Return false (or
   /// pass null) to cancel that write; the tab then stays dirty.
+  ///
+  /// [confirmOverwrite] is asked before any extension swap whose destination
+  /// already holds a DIFFERENT file. Return false (or pass null) to cancel;
+  /// the original is then left untouched on disk.
   Future<SaveResult> saveActive(
     EditorProvider editor, {
     required String? passwordForNewEncryption,
     Future<bool> Function()? confirmLossyRtf,
+    Future<bool> Function(String path)? confirmOverwrite,
   }) async {
     final tab = editor.activeTab;
     if (tab == null) return SaveResult.failure('No active tab');
@@ -83,6 +96,18 @@ class FileOperations {
       return confirmLossyRtf != null && await confirmLossyRtf();
     }
 
+    // An extension swap writes a path the user never picked, and AtomicWrite
+    // replaces the destination outright (MOVEFILE_REPLACE_EXISTING leaves no
+    // .scrib-bak). Each swap branch also deletes the source afterwards, so an
+    // unguarded swap destroys TWO files. Never replace a different file
+    // without asking; with no callback wired, refuse rather than clobber.
+    Future<bool> overwriteAllowed(String newPath) async {
+      if (canonicalPath(newPath) == canonicalPath(currentPath)) return true;
+      if (!await File(newPath).exists()) return true;
+      if (confirmOverwrite == null) return false;
+      return confirmOverwrite(newPath);
+    }
+
     try {
       // Case A: tab switched to encrypted, but file on disk is .txt/.rtf
       // → rename to .scrb and encrypt.
@@ -90,6 +115,9 @@ class FileOperations {
         final newPath = _swapExtension(currentPath, '.scrb');
         if (tab.password == null && passwordForNewEncryption == null) {
           return SaveResult.failure('Password required');
+        }
+        if (!await overwriteAllowed(newPath)) {
+          return SaveResult.failure(saveOverwriteDeclined);
         }
         tab.password ??= passwordForNewEncryption;
         final wrote = await editor.saveActiveTabAs(newPath,
@@ -115,11 +143,15 @@ class FileOperations {
       if (!tab.isEncrypted && isScrbOnDisk) {
         final newExt = tab.mode == EditorMode.richText ? '.rtf' : '.txt';
         final newPath = _swapExtension(currentPath, newExt);
+        if (!await overwriteAllowed(newPath)) {
+          return SaveResult.failure(saveOverwriteDeclined);
+        }
         if (newExt == '.rtf' && tab.deltaJson.isNotEmpty) {
           if (!await rtfWriteAllowed()) return SaveResult.failure('Cancelled');
-          final rtf = RtfService.deltaToRtf(tab.deltaJson);
+          final written = tab.snapshotForSave();
+          final rtf = RtfService.deltaToRtf(written.deltaJson);
           await _fileService.writeRtfFile(newPath, rtf);
-          editor.markTabSavedAs(newPath);
+          editor.markTabSavedAs(tab, newPath, written);
         } else {
           final wrote = await editor.saveActiveTabAs(newPath);
           if (!wrote) return SaveResult.failure('Tab is locked');
@@ -137,16 +169,25 @@ class FileOperations {
       // extension, mirroring the encryption-toggle cases above.
       if (!tab.isEncrypted && !isScrbOnDisk) {
         if (isRichWithDelta && !isRtfOnDisk) {
-          if (!await rtfWriteAllowed()) return SaveResult.failure('Cancelled');
+          // Same order everywhere: confirm the destination first, then the
+          // content loss.
           final newPath = _swapExtension(currentPath, '.rtf');
-          final rtf = RtfService.deltaToRtf(tab.deltaJson);
+          if (!await overwriteAllowed(newPath)) {
+            return SaveResult.failure(saveOverwriteDeclined);
+          }
+          if (!await rtfWriteAllowed()) return SaveResult.failure('Cancelled');
+          final written = tab.snapshotForSave();
+          final rtf = RtfService.deltaToRtf(written.deltaJson);
           await _fileService.writeRtfFile(newPath, rtf);
-          editor.markTabSavedAs(newPath);
+          editor.markTabSavedAs(tab, newPath, written);
           await _deleteOldFile(currentPath, newPath);
           return SaveResult.success(newPath: newPath, extensionChanged: true);
         }
         if (!isRichWithDelta && isRtfOnDisk) {
           final newPath = _swapExtension(currentPath, '.txt');
+          if (!await overwriteAllowed(newPath)) {
+            return SaveResult.failure(saveOverwriteDeclined);
+          }
           final wrote = await editor.saveActiveTabAs(newPath);
           if (!wrote) return SaveResult.failure('Tab is locked');
           await _deleteOldFile(currentPath, newPath);
@@ -165,9 +206,10 @@ class FileOperations {
       // Case D: in-place save. RTF gets Delta→RTF conversion first.
       if (isRtfOnDisk && isRichWithDelta) {
         if (!await rtfWriteAllowed()) return SaveResult.failure('Cancelled');
-        final rtf = RtfService.deltaToRtf(tab.deltaJson);
+        final written = tab.snapshotForSave();
+        final rtf = RtfService.deltaToRtf(written.deltaJson);
         await _fileService.writeRtfFile(currentPath, rtf);
-        editor.markTabSavedAs(currentPath);
+        editor.markTabSavedAs(tab, currentPath, written);
         return SaveResult.success();
       }
       final saved = await editor.saveActiveTab();
@@ -195,6 +237,7 @@ class FileOperations {
     EditorProvider editor, {
     required Future<String?> Function() resolvePassword,
     Future<bool> Function()? confirmLossyRtf,
+    Future<bool> Function(String path)? confirmOverwrite,
     void Function(bool encrypted)? onWillWrite,
   }) async {
     final tab = editor.activeTab;
@@ -235,6 +278,15 @@ class FileOperations {
     final effectivePath = (tab.isEncrypted && !path.toLowerCase().endsWith('.scrb'))
         ? _swapExtension(path, '.scrb')
         : path;
+    // The picker ran its native "replace?" check against `path`. When we
+    // retarget to a .scrb the user never saw, that confirmation does not apply
+    // to the file we are about to replace — ask again for the real destination.
+    if (canonicalPath(effectivePath) != canonicalPath(path) &&
+        await File(effectivePath).exists()) {
+      if (confirmOverwrite == null || !await confirmOverwrite(effectivePath)) {
+        return SaveResult.failure(saveOverwriteDeclined);
+      }
+    }
     final isEncrypted = effectivePath.toLowerCase().endsWith('.scrb');
     final isRtf = effectivePath.toLowerCase().endsWith('.rtf');
 
@@ -258,9 +310,10 @@ class FileOperations {
 
     try {
       if (isRtfWrite) {
-        final rtf = RtfService.deltaToRtf(tab.deltaJson);
+        final written = tab.snapshotForSave();
+        final rtf = RtfService.deltaToRtf(written.deltaJson);
         await _fileService.writeRtfFile(effectivePath, rtf);
-        editor.markTabSavedAs(effectivePath);
+        editor.markTabSavedAs(tab, effectivePath, written);
       } else {
         final wrote = await editor.saveActiveTabAs(effectivePath,
             encrypted: isEncrypted, password: password);

@@ -107,7 +107,7 @@ void main() {
       tab.controller.text = 'x';
       editor.toggleEditorMode();
       expect(tab.preToggleSnapshot, isNotNull);
-      tab.markSaved();
+      tab.markSaved(tab.snapshotForSave());
       expect(tab.preToggleSnapshot, isNull);
     });
   });
