@@ -14,7 +14,9 @@
 /// Numbers may be integers, decimals, or scientific notation (`12`, `3.14`,
 /// `.5`, `1e+21`, `2.5e-3`). Whitespace and thousands separators (`,` and `_`)
 /// are ignored. Parse depth is capped so pathological nesting raises a
-/// [CalcException] instead of overflowing the stack.
+/// [CalcException] instead of overflowing the stack, and a `^` whose result
+/// overflows raises one too, so a runaway tower like `9^9^9` is an error
+/// rather than an infinity travelling on through the rest of the expression.
 library;
 
 import 'dart:math' as math;
@@ -138,6 +140,11 @@ class CalcEvaluator {
       final exponent = _guard(_power); // right-associative
       final result = _pow(base, exponent);
       if (result.isNaN) throw CalcException('Undefined result');
+      // A runaway tower like 9^9^9 overflows to infinity here. Reporting it at
+      // the point of the overflow, rather than letting infinity propagate for
+      // formatResult to reject later, means eval() itself never hands a caller
+      // a number no arithmetic below it can use.
+      if (result.isInfinite) throw CalcException('Result is too large');
       return result;
     }
     return base;

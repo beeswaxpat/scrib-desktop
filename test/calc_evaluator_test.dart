@@ -191,10 +191,16 @@ void main() {
       expect(eval('0 ^ 0'), 1);
     });
 
-    test('infinite results are rejected at format time, never displayed', () {
+    test('infinite results are rejected, never displayed', () {
+      // The power itself now refuses to overflow, and formatResult refuses an
+      // infinity reached any other way (1e308 * 1e308), so nothing infinite
+      // can be shown or inserted into a note.
       expect(() => CalcEvaluator.formatResult(CalcEvaluator.eval('10 ^ 999')),
           throwsA(isA<CalcException>()));
       expect(CalcEvaluator.tryEvalToString('10 ^ 999'), isNull);
+      expect(() => CalcEvaluator.formatResult(double.infinity),
+          throwsA(isA<CalcException>()));
+      expect(CalcEvaluator.tryEvalToString('1e308 * 1e308'), isNull);
     });
   });
 
@@ -223,6 +229,42 @@ void main() {
       // The depth counter must unwind between terms: 2000 additions in a row
       // never nest, so they must not trip the cap.
       expect(eval(List.filled(2000, '1').join('+')), 2000);
+    });
+  });
+
+  group('runaway exponents are bounded', () {
+    test('a tower of exponents is an error at eval, not an infinity', () {
+      // Regression: eval used to return Infinity here and leave it to
+      // formatResult to notice, so '9^9^9 - 9^9^9' evaluated to NaN and
+      // '1 / 9^9^9' quietly evaluated to 0. Every one of these must come back
+      // as a CalcException, in milliseconds, with no hang and no crash.
+      for (final expr in [
+        '9^9^9',
+        '9^9^9^9',
+        '2^2^30',
+        '10^999',
+        '1.0000001^999999999999',
+        '0^-1',
+      ]) {
+        expect(() => eval(expr), throwsA(isA<CalcException>()), reason: expr);
+        expect(CalcEvaluator.tryEvalToString(expr), isNull, reason: expr);
+      }
+    });
+
+    test('an overflowing power poisons nothing downstream', () {
+      expect(() => eval('9^9^9 - 9^9^9'), throwsA(isA<CalcException>()));
+      expect(CalcEvaluator.tryEvalToString('1 / 9^9^9'), isNull);
+    });
+
+    test('a huge literal exponent is still rejected', () {
+      expect(CalcEvaluator.tryEvalToString('1e999999999'), isNull);
+      expect(CalcEvaluator.tryEvalToString('1e-999999999'), '0');
+    });
+
+    test('powers that fit in a double are untouched', () {
+      expect(eval('2 ^ 10'), 1024);
+      expect(eval('10 ^ 30'), 1e30);
+      expect(eval('2 ^ -20'), closeTo(9.5367431640625e-7, 1e-18));
     });
   });
 }

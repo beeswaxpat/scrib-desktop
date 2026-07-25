@@ -139,8 +139,13 @@ class _LinkDialogState extends State<_LinkDialog> {
     final url = normalizeLinkUrl(_urlController.text);
     if (url == null) {
       setState(() {
-        _error = 'Enter a web address (https://...) or email. '
-            'Only http, https, and mailto links are allowed.';
+        // normalizeLinkUrl now also refuses addresses that Windows and Dart's
+        // Uri would resolve differently (backslashes, UNC paths, a "user@"
+        // before the host), so the message names those rather than leaving the
+        // user retyping a scheme that was never the problem.
+        _error = 'Enter a web address (https://example.com) or an email '
+            'address. Only http, https, and mailto links are allowed, with no '
+            'backslashes and no "user@" before the host.';
       });
       _urlFocus.requestFocus();
       return;
