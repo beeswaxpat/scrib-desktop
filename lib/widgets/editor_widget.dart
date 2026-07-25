@@ -6,6 +6,7 @@ import 'package:flutter_quill/flutter_quill.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../providers/editor_provider.dart';
+import '../dialogs/confirm_dialog.dart';
 import '../services/format_utils.dart';
 import '../services/settings_service.dart';
 import '../constants.dart';
@@ -364,9 +365,31 @@ class ScribEditorState extends State<ScribEditor> {
         // Ctrl+click opens a link. Scheme allowlist (http/https/mailto) —
         // a note must never be able to launch anything else.
         onLaunchUrl: (url) async {
-          if (!isSafeLaunchUrl(url)) return;
+          if (!isSafeLaunchUrl(url)) {
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('That link was blocked: only http, https and '
+                      'mailto links can be opened.'),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+            return;
+          }
           final uri = Uri.tryParse(url);
           if (uri == null) return;
+          // Show the real destination before leaving the app. Link TEXT is
+          // arbitrary and a note can arrive from anyone, so the visible label
+          // is not evidence of where the link goes.
+          if (!context.mounted) return;
+          final go = await showScribConfirm(
+            context,
+            title: 'Open Link?',
+            message: 'This link opens in your browser:\n\n$url',
+            confirmLabel: 'Open',
+          );
+          if (!go) return;
           if (await canLaunchUrl(uri)) {
             await launchUrl(uri, mode: LaunchMode.externalApplication);
           }

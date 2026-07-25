@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode, visibleForTesting;
 import 'package:ffi/ffi.dart';
 
 /// Canonical form of [path] for file-identity comparison.
@@ -28,9 +28,10 @@ String canonicalPath(String path) {
 /// Windows-safe atomic file writes.
 ///
 /// Dart's `File.rename()` delegates to `MoveFileW` on Windows, which refuses
-/// to overwrite an existing destination. For an encrypted editor that's a
-/// hard correctness bug: saves would fail silently on any file that already
-/// exists.
+/// to overwrite an existing destination (a Windows API constraint, not a Dart
+/// one: on POSIX the same call replaces the destination). For an encrypted
+/// editor that is a hard correctness bug: saves would fail silently on any
+/// file that already exists.
 ///
 /// This helper uses `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING |
 /// MOVEFILE_WRITE_THROUGH`, which is documented as atomic on NTFS and
@@ -89,6 +90,7 @@ class AtomicWrite {
     return _withPathLock(path, () async {
       final tmpPath = '$path$tmpSuffix';
       final tmp = File(tmpPath);
+      await _clearStagingPath(tmp);
       await tmp.writeAsBytes(bytes, flush: true);
       try {
         await _renameReplacing(tmpPath, path);
@@ -106,6 +108,7 @@ class AtomicWrite {
     return _withPathLock(path, () async {
       final tmpPath = '$path$tmpSuffix';
       final tmp = File(tmpPath);
+      await _clearStagingPath(tmp);
       await tmp.writeAsString(content, flush: true);
       try {
         await _renameReplacing(tmpPath, path);
@@ -118,11 +121,40 @@ class AtomicWrite {
     });
   }
 
+  /// Remove anything sitting at the staging path before we write there.
+  ///
+  /// Writing to an existing path follows it: if an attacker (or a stale crash
+  /// artifact) leaves a symlink, junction or hardlink at `<path>.scrib-tmp`,
+  /// the note content is written through it to wherever it points, and on the
+  /// hardlink case the rename then leaves that other name holding our bytes.
+  /// Deleting first means we always create a fresh regular file. Uses
+  /// `Link.delete` when the entry is a link, since `File.delete` follows it.
+  static Future<void> _clearStagingPath(File tmp) async {
+    try {
+      final type = await FileSystemEntity.type(tmp.path, followLinks: false);
+      if (type == FileSystemEntityType.notFound) return;
+      if (type == FileSystemEntityType.link) {
+        await Link(tmp.path).delete();
+      } else {
+        await tmp.delete();
+      }
+    } catch (e) {
+      // A staging path we cannot clear is left for the write to fail on
+      // loudly, rather than silently writing through whatever is there.
+      if (kDebugMode) debugPrint('Could not clear staging path ${tmp.path}: $e');
+    }
+  }
+
   /// Rename [src] to [dst], replacing [dst] if it exists.
   static Future<void> _renameReplacing(String src, String dst) async {
     if (Platform.isWindows && !debugForceFallback) {
       if (_moveFileExReplace(src, dst)) return;
-      // Fall through to the pure-Dart fallback if ffi fails.
+      // Fall through to the pure-Dart fallback if ffi fails. Log it: the
+      // fallback is the fragile path (it is the one that can strand a
+      // .scrib-bak), so silently living on it for months hides a real problem.
+      if (kDebugMode) {
+        debugPrint('MoveFileExW failed for $dst; using crash-safe fallback');
+      }
     }
     await _crashSafeRename(src, dst);
   }
@@ -169,7 +201,14 @@ class AtomicWrite {
     await target.rename(bak.path);
     try {
       await File(src).rename(dst);
-      try { await bak.delete(); } catch (_) {}
+      // A backup we cannot remove is a full copy of the previous content left
+      // beside the file. On the encrypt path that copy is PLAINTEXT, so the
+      // failure must be visible rather than swallowed.
+      try {
+        await bak.delete();
+      } catch (e) {
+        if (kDebugMode) debugPrint('Could not remove backup ${bak.path}: $e');
+      }
     } catch (e) {
       // Restore previous content.
       try { await bak.rename(dst); } catch (_) {}

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
@@ -20,7 +21,22 @@ void main() async {
   await windowManager.ensureInitialized();
 
   final settingsService = SettingsService();
-  await settingsService.init();
+  try {
+    await settingsService.init();
+  } catch (e) {
+    // Hive holds an exclusive lock on the settings box, so a second copy of
+    // Scrib fails here. Throwing before runApp left a process with no window
+    // and no message, which reads as "the app is broken". Tell the user, then
+    // exit cleanly instead of lingering invisibly.
+    await windowManager.show();
+    runApp(_StartupFailureApp(
+      message: 'Scrib is already running.\n\n'
+          'Only one copy can be open at a time, because they would overwrite '
+          "each other's settings. Switch to the open window instead.",
+      detail: '$e',
+    ));
+    return;
+  }
 
   // Set default save location on first launch
   if (settingsService.defaultSaveLocation.isEmpty) {
@@ -228,21 +244,35 @@ class _ScribDesktopAppState extends State<ScribDesktopApp> with WindowListener {
     // Record the open tabs (paths only — never content or passwords) so the
     // next launch can restore them. With restore off, clear any stored
     // session instead so no record of the workspace persists.
-    if (widget.settingsService.restoreSession) {
-      await widget.settingsService.saveSession(
-        widget.editorProvider.sessionSnapshot(),
-        widget.editorProvider.sessionActiveIndex,
-      );
-    } else {
-      await widget.settingsService.clearSession();
+    // Everything from here is shutdown housekeeping. setPreventClose(true) is
+    // still in force, so a throw in this tail escapes an `async void` handler
+    // and leaves a window that can never be closed: the user's only way out is
+    // Task Manager, which loses the very session this block is saving. None of
+    // it is worth blocking the quit, so failures are swallowed and the destroy
+    // always runs.
+    try {
+      if (widget.settingsService.restoreSession) {
+        await widget.settingsService.saveSession(
+          widget.editorProvider.sessionSnapshot(),
+          widget.editorProvider.sessionActiveIndex,
+        );
+      } else {
+        await widget.settingsService.clearSession();
+      }
+    } catch (e) {
+      if (kDebugMode) debugPrint('Session save on quit failed: $e');
     }
 
     // Dispose timers/listeners before destroy so the process exits cleanly.
-    _windowSaveDebounce?.cancel();
-    widget.settingsService.removeListener(_onSettingsChanged);
-    widget.editorProvider.removeListener(_onEditorChanged);
-    windowManager.removeListener(this);
-    widget.editorProvider.dispose();
+    try {
+      _windowSaveDebounce?.cancel();
+      widget.settingsService.removeListener(_onSettingsChanged);
+      widget.editorProvider.removeListener(_onEditorChanged);
+      windowManager.removeListener(this);
+      widget.editorProvider.dispose();
+    } catch (e) {
+      if (kDebugMode) debugPrint('Teardown on quit failed: $e');
+    }
 
     await windowManager.destroy();
   }
@@ -321,6 +351,58 @@ class _ScribDesktopAppState extends State<ScribDesktopApp> with WindowListener {
         darkTheme: ScribTheme.darkTheme(accentColorIndex: effectiveAccent),
         themeMode: themeMode,
         home: const MainScreen(),
+      ),
+    );
+  }
+}
+
+/// Minimal window shown when startup fails before the editor can be built.
+///
+/// A failure in main() before runApp leaves a process with no window at all,
+/// which the user experiences as the app silently refusing to open. This gives
+/// the failure a face and an OK button.
+class _StartupFailureApp extends StatelessWidget {
+  final String message;
+  final String detail;
+
+  const _StartupFailureApp({required this.message, required this.detail});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData.dark(useMaterial3: true),
+      home: Scaffold(
+        body: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 460),
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Scrib could not start',
+                      style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 16),
+                  Text(message),
+                  const SizedBox(height: 16),
+                  if (kDebugMode)
+                    Text(detail,
+                        style: Theme.of(context).textTheme.bodySmall),
+                  const SizedBox(height: 24),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: FilledButton(
+                      onPressed: () => windowManager.destroy(),
+                      child: const Text('Close'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

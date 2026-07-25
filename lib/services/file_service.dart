@@ -215,6 +215,14 @@ class ScribFileReadException implements Exception {
   String toString() => 'Could not read file';
 }
 
+/// Thrown when the file is larger than [FileService.maxReadBytes].
+class ScribFileTooLargeException implements Exception {
+  final String path;
+  ScribFileTooLargeException(this.path);
+  @override
+  String toString() => 'File is too large to open';
+}
+
 /// Thrown when the file can't be written to disk (disk full, permissions).
 class ScribFileWriteException implements Exception {
   final String path;
@@ -236,13 +244,43 @@ class ScribFileWriteException implements Exception {
 ///
 /// All writes are atomic on Windows via MoveFileExW — see atomic_write.dart.
 class FileService {
-  /// Read a plaintext .txt file
-  Future<String> readTxtFile(String path) async {
-    await AtomicWrite.recoverFileIfNeeded(path);
+  /// Largest file Scrib will read into a tab.
+  ///
+  /// Everything downstream holds the whole document in memory several times
+  /// over (file bytes, the decoded String, the editor controller, and for a
+  /// .scrb the plaintext plus ciphertext plus the isolate's copy), so an
+  /// unbounded read turns a large or hostile file into an out-of-memory crash.
+  /// 64 MB is far above any realistic note and far below that cliff.
+  static const int maxReadBytes = 64 * 1024 * 1024;
+
+  Future<Uint8List> _readBounded(String path) async {
+    final file = File(path);
     try {
-      return await File(path).readAsString(encoding: utf8);
+      if (await file.length() > maxReadBytes) {
+        throw ScribFileTooLargeException(path);
+      }
+      return await file.readAsBytes();
+    } on ScribFileTooLargeException {
+      rethrow;
     } catch (_) {
       throw ScribFileReadException(path);
+    }
+  }
+
+  /// Read a plaintext file. Tries UTF-8, then falls back to Latin-1.
+  ///
+  /// The fallback matters because the open list includes formats that are
+  /// routinely not UTF-8 (`.log`, `.csv`, `.ini` written by older Windows
+  /// tools). Without it those files were unopenable: the decode threw and the
+  /// user saw only "Could not read file". Latin-1 maps every byte, so the
+  /// content is always shown rather than refused.
+  Future<String> readTxtFile(String path) async {
+    await AtomicWrite.recoverFileIfNeeded(path);
+    final bytes = await _readBounded(path);
+    try {
+      return utf8.decode(bytes);
+    } catch (_) {
+      return latin1.decode(bytes);
     }
   }
 
@@ -258,12 +296,7 @@ class FileService {
   /// Read and decrypt a .scrb v2 file. Returns null on wrong password or tamper.
   Future<String?> readScrbFile(String path, String password) async {
     await AtomicWrite.recoverFileIfNeeded(path);
-    final Uint8List bytes;
-    try {
-      bytes = await File(path).readAsBytes();
-    } catch (_) {
-      throw ScribFileReadException(path);
-    }
+    final bytes = await _readBounded(path);
     if (bytes.length < 5) return null;
     if (bytes[0] != scrbMagic[0] || bytes[1] != scrbMagic[1] ||
         bytes[2] != scrbMagic[2] || bytes[3] != scrbMagic[3]) {
@@ -316,12 +349,7 @@ class FileService {
   /// Read a .rtf file. Tries UTF-8; falls back to Latin-1 for Word-style files.
   Future<String> readRtfFile(String path) async {
     await AtomicWrite.recoverFileIfNeeded(path);
-    final Uint8List bytes;
-    try {
-      bytes = await File(path).readAsBytes();
-    } catch (_) {
-      throw ScribFileReadException(path);
-    }
+    final bytes = await _readBounded(path);
     try {
       return utf8.decode(bytes);
     } catch (_) {

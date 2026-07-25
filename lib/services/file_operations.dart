@@ -2,7 +2,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import '../providers/editor_provider.dart';
-import 'atomic_write.dart' show canonicalPath;
+import 'atomic_write.dart' show AtomicWrite, canonicalPath;
 import 'file_service.dart';
 import 'rtf_service.dart';
 import 'settings_service.dart';
@@ -13,6 +13,14 @@ import 'settings_service.dart';
 /// still dirty (and, after Ctrl+E, still flagged encrypted over a plaintext
 /// path), which is not obvious from the dialog alone.
 const String saveOverwriteDeclined = 'Overwrite declined';
+
+/// Error string returned when the file changed on disk since Scrib last read or
+/// wrote it and the user chose not to replace the external edit.
+const String saveExternalChangeDeclined = 'External change declined';
+
+/// Error string returned when Save As targets a file another tab already has
+/// open. Two tabs on one file overwrite each other on the next auto-save.
+const String savePathAlreadyOpen = 'Already open in another tab';
 
 /// Outcome of a save / save-as operation. The `extensionChanged` flag tells
 /// the caller whether the on-disk file was renamed to a different extension
@@ -75,6 +83,7 @@ class FileOperations {
     required String? passwordForNewEncryption,
     Future<bool> Function()? confirmLossyRtf,
     Future<bool> Function(String path)? confirmOverwrite,
+    Future<bool> Function(String path)? confirmExternalChange,
   }) async {
     final tab = editor.activeTab;
     if (tab == null) return SaveResult.failure('No active tab');
@@ -108,6 +117,18 @@ class FileOperations {
       return confirmOverwrite(newPath);
     }
 
+    // Another application changed this file since we last read or wrote it.
+    // Background saves refuse outright; the manual path is the one place the
+    // user can consciously choose to replace the external edit.
+    bool ignoreDiskChange = false;
+    if (await editor.diskChangedSince(tab)) {
+      if (confirmExternalChange == null ||
+          !await confirmExternalChange(currentPath)) {
+        return SaveResult.failure(saveExternalChangeDeclined);
+      }
+      ignoreDiskChange = true;
+    }
+
     try {
       // Case A: tab switched to encrypted, but file on disk is .txt/.rtf
       // → rename to .scrb and encrypt.
@@ -127,7 +148,8 @@ class FileOperations {
         if (!wrote) return SaveResult.failure('Tab is locked');
         // Remove the now-orphaned plaintext original — leaving it on disk would
         // defeat the point of encrypting.
-        final removed = await _deleteOldFile(currentPath, newPath);
+        // Encrypt direction: the original is plaintext, so wipe it, not just unlink it.
+        final removed = await _deleteOldFile(currentPath, newPath, shred: true);
         return SaveResult.success(
           newPath: newPath,
           extensionChanged: true,
@@ -212,7 +234,8 @@ class FileOperations {
         editor.markTabSavedAs(tab, currentPath, written);
         return SaveResult.success();
       }
-      final saved = await editor.saveActiveTab();
+      final saved =
+          await editor.saveActiveTab(ignoreDiskChange: ignoreDiskChange);
       if (!saved) return SaveResult.failure('Could not save');
       return SaveResult.success();
     } catch (e) {
@@ -274,6 +297,13 @@ class FileOperations {
     );
     if (path == null) return SaveResult.failure('Cancelled');
 
+    // Binding a second tab to a file another tab already holds means the next
+    // auto-save pass writes both, and whichever runs second silently discards
+    // the other tab's edits. Refuse before anything is written.
+    if (editor.isPathOpenInOtherTab(path, tab)) {
+      return SaveResult.failure(savePathAlreadyOpen);
+    }
+
     // If the tab is encrypted, force a .scrb extension even if the user omitted it.
     final effectivePath = (tab.isEncrypted && !path.toLowerCase().endsWith('.scrb'))
         ? _swapExtension(path, '.scrb')
@@ -329,18 +359,74 @@ class FileOperations {
     }
   }
 
-  /// Best-effort removal of the pre-swap original after an encrypt/decrypt that
-  /// changed the extension. Never deletes when the path did not actually change.
-  /// Returns true if the old file is gone (deleted or already absent).
-  Future<bool> _deleteOldFile(String oldPath, String newPath) async {
-    if (oldPath == newPath) return true;
+  /// Removal of the pre-swap original after an encrypt/decrypt that changed the
+  /// extension. Never deletes when the path did not actually change.
+  /// Returns true if the old file is gone (removed or already absent).
+  ///
+  /// When [shred] is true the bytes are overwritten before the file is
+  /// unlinked. This is the encrypt direction: `File.delete()` only drops the
+  /// directory entry, so without this the plaintext a user just "encrypted"
+  /// stays readable in free space with an undelete tool, defeating AES-256
+  /// without touching AES-256. Overwriting is best-effort by nature: on an SSD
+  /// (wear levelling), a snapshotted volume, or a synced folder the original
+  /// blocks may survive anyway, which is why the README tells users to create
+  /// sensitive notes encrypted rather than converting them.
+  ///
+  /// Scrib's own staging and backup siblings are swept too: a `.scrib-bak` left
+  /// by an interrupted fallback rename is a complete copy of the previous
+  /// content, and on this path that content is the plaintext being removed.
+  Future<bool> _deleteOldFile(String oldPath, String newPath,
+      {bool shred = false}) async {
+    if (canonicalPath(oldPath) == canonicalPath(newPath)) return true;
+    var ok = true;
     try {
       final f = File(oldPath);
-      if (await f.exists()) await f.delete();
-      return true;
+      if (await f.exists()) {
+        if (shred) await _overwriteBytes(f);
+        await f.delete();
+      }
     } catch (e) {
       if (kDebugMode) debugPrint('Could not remove old file $oldPath: $e');
-      return false;
+      ok = false;
+    }
+    for (final sibling in [
+      '$oldPath${AtomicWrite.bakSuffix}',
+      '$oldPath${AtomicWrite.tmpSuffix}',
+    ]) {
+      try {
+        final s = File(sibling);
+        if (await s.exists()) {
+          if (shred) await _overwriteBytes(s);
+          await s.delete();
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('Could not remove $sibling: $e');
+        ok = false;
+      }
+    }
+    return ok;
+  }
+
+  /// Overwrite [file]'s contents in place before it is unlinked. Writes through
+  /// the same handle and flushes, so the filesystem reuses the existing blocks
+  /// rather than allocating new ones the way a fresh write would.
+  Future<void> _overwriteBytes(File file) async {
+    final length = await file.length();
+    if (length <= 0) return;
+    final handle = await file.open(mode: FileMode.writeOnlyAppend);
+    try {
+      await handle.setPosition(0);
+      const chunk = 64 * 1024;
+      final zeros = Uint8List(chunk);
+      var remaining = length;
+      while (remaining > 0) {
+        final n = remaining < chunk ? remaining : chunk;
+        await handle.writeFrom(zeros, 0, n);
+        remaining -= n;
+      }
+      await handle.flush();
+    } finally {
+      await handle.close();
     }
   }
 

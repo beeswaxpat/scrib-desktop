@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../constants.dart';
 import '../services/atomic_write.dart';
 import '../services/file_service.dart';
+import '../services/image_embed_service.dart';
 import '../services/rtf_service.dart';
 import '../services/settings_service.dart';
 import '../services/table_embed.dart';
@@ -141,6 +144,14 @@ class EditorTab {
   /// the password (which routes through [EditorProvider.openScrbFile]).
   bool isLocked;
 
+  /// On-disk identity as of the last read or successful write: modification
+  /// time and size. Compared before a write to notice that another application
+  /// changed the file underneath us (an editor, `git pull`, a cloud sync).
+  /// Null means we have never stamped it, so there is nothing to compare and
+  /// writes proceed. See [EditorProvider.diskChangedSince].
+  DateTime? diskModified;
+  int? diskLength;
+
   /// Last pre-mode-toggle snapshot. Consumed once by revertModeToggle() and
   /// cleared on any subsequent mode change or tab save.
   EditorSnapshot? _preToggleSnapshot;
@@ -231,8 +242,26 @@ class EditorTab {
   /// disk, not already locked, and hold no unsaved changes that would be lost
   /// (a dirty tab is saved by [EditorProvider.lockTab] first, which needs the
   /// password to still be in memory).
+  /// Whether the tab's on-disk file is actually an encrypted container.
+  ///
+  /// [isEncrypted] is an in-memory intent flag that Ctrl+E flips WITHOUT
+  /// touching [filePath], so it can be true over a plaintext `.txt`. Anything
+  /// that reasons about the file on disk must test the path, not the flag.
+  bool get hasScrbPath => filePath != null && filePath!.toLowerCase().endsWith('.scrb');
+
+  /// Whether this tab can be locked right now.
+  ///
+  /// Requires a real `.scrb` on disk: locking a tab that is merely FLAGGED
+  /// encrypted over a plaintext file wipes the content and password, shows a
+  /// lock screen, and then can never be unlocked, because unlock reads the
+  /// path back through openScrbFile and the bytes there are not a .scrb. The
+  /// UI would report "Encrypted" and then "Locked" over a file that is
+  /// plaintext on disk.
   bool get canLock =>
-      isEncrypted && !isLocked && filePath != null && (!isDirty || password != null);
+      isEncrypted &&
+      hasScrbPath &&
+      !isLocked &&
+      (!isDirty || password != null);
 
   /// Wipe the decrypted content and password from this tab's state and mark it
   /// locked. The caller is responsible for persisting unsaved changes first.
@@ -244,6 +273,10 @@ class EditorTab {
     deltaJson = '';
     savedDeltaJson = '';
     _preToggleSnapshot = null;
+    // The undo stack still holds every intermediate state of the decrypted
+    // document; clearing the tab's text without clearing it would leave the
+    // note reconstructable behind the lock screen with Ctrl+Z.
+    undoController.value = UndoHistoryValue.empty;
   }
 
   /// Get the content to save (handles both modes)
@@ -419,16 +452,65 @@ class EditorProvider extends ChangeNotifier {
   ///
   /// Refused tabs stay dirty, so the quit flow's saveAllSaveable backstop
   /// keeps refusing to discard them. Throws on I/O failure.
+  /// Record [tab]'s on-disk identity. Call after every read and every
+  /// successful write, so the next write can tell "unchanged since we last
+  /// touched it" from "somebody else edited this".
+  Future<void> stampDiskState(EditorTab tab) async {
+    final path = tab.filePath;
+    if (path == null) {
+      tab.diskModified = null;
+      tab.diskLength = null;
+      return;
+    }
+    try {
+      final stat = await File(path).stat();
+      tab.diskModified = stat.modified;
+      tab.diskLength = stat.size;
+    } catch (_) {
+      tab.diskModified = null;
+      tab.diskLength = null;
+    }
+  }
+
+  /// True when [tab]'s file changed on disk since [stampDiskState] last ran.
+  ///
+  /// Without this, a tab left open across a `git pull`, a OneDrive sync, or an
+  /// edit in another editor is silently overwritten by the next auto-save:
+  /// AtomicWrite replaces the file outright and leaves no `.scrib-bak`, so the
+  /// external edit is gone with no warning. A missing file is NOT a change, as
+  /// the write simply recreates it.
+  Future<bool> diskChangedSince(EditorTab tab) async {
+    final path = tab.filePath;
+    final known = tab.diskModified;
+    if (path == null || known == null) return false;
+    try {
+      final f = File(path);
+      if (!await f.exists()) return false;
+      final stat = await f.stat();
+      return stat.modified != known || stat.size != tab.diskLength;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Returns the [SavedContent] that reached disk, or null when the write was
   /// refused. Callers pass the result straight to [EditorTab.markSaved] so the
   /// tab is marked clean against the bytes written, not against content the
   /// user may have typed while the write was in flight.
-  Future<SavedContent?> _saveTabToDisk(EditorTab tab) async {
+  ///
+  /// [ignoreDiskChange] is set only by the manual save path, after the user has
+  /// been shown the external-modification prompt and chose to overwrite.
+  Future<SavedContent?> _saveTabToDisk(EditorTab tab,
+      {bool ignoreDiskChange = false}) async {
     final path = tab.filePath;
     if (path == null) return null;
     // A locked tab's in-memory content is empty by design — writing it would
     // destroy the encrypted file. Locked tabs are never saved.
     if (tab.isLocked) return null;
+    // Somebody else changed this file since we last read or wrote it. Refuse
+    // and stay dirty rather than replacing their edit; the manual save path
+    // asks the user and retries with ignoreDiskChange.
+    if (!ignoreDiskChange && await diskChangedSince(tab)) return null;
     final lower = path.toLowerCase();
     final isScrbPath = lower.endsWith('.scrb');
     // Snapshot first: every routing decision below and the bytes written must
@@ -440,6 +522,7 @@ class EditorProvider extends ChangeNotifier {
       if (tab.password == null) return null;
       if (!isScrbPath) return null; // ciphertext only ever goes into .scrb
       await _fileService.writeScrbFile(path, content, tab.password!);
+      await stampDiskState(tab);
       return written;
     }
 
@@ -454,6 +537,7 @@ class EditorProvider extends ChangeNotifier {
       }
       await _fileService.writeRtfFile(
           path, RtfService.deltaToRtf(written.deltaJson));
+      await stampDiskState(tab);
       return written;
     }
 
@@ -462,6 +546,7 @@ class EditorProvider extends ChangeNotifier {
     }
 
     await _fileService.writeTxtFile(path, content);
+    await stampDiskState(tab);
     return written;
   }
 
@@ -506,7 +591,19 @@ class EditorProvider extends ChangeNotifier {
       // refuse the lock and let the next save pick them up.
       if (tab.isDirty) return false;
     }
+    // Capture before the wipe so the clipboard check has something to match.
+    final wasShowing = tab.mode == EditorMode.richText
+        ? extractSearchableDeltaText(tab.deltaJson)
+        : tab.controller.text;
     tab.lock();
+    // Embedded images decode into a process-global LRU keyed by data URI, so
+    // the decrypted picture bytes of the note we just locked would otherwise
+    // stay in memory behind the lock screen. The cache is shared, so this
+    // evicts other tabs' images too: they re-decode on next paint, which is
+    // the right trade for a control whose whole purpose is to stop holding
+    // decrypted content.
+    ImageEmbedService.clearDecodeCache();
+    unawaited(_purgeClipboardIfFrom(wasShowing));
     _invalidateActiveText();
     notifyListeners();
     return true;
@@ -520,6 +617,34 @@ class EditorProvider extends ChangeNotifier {
       if (await lockTab(tab)) locked++;
     }
     return locked;
+  }
+
+  /// Minimum clipboard length considered for the post-lock purge. Short strings
+  /// ("the", a digit) appear inside almost any note, so matching on them would
+  /// clear clipboard data that has nothing to do with Scrib.
+  static const int _clipboardPurgeMinLength = 16;
+
+  /// Clear the system clipboard if it holds a slice of [content].
+  ///
+  /// Locking wipes the decrypted note from the tab, but text the user copied
+  /// out of it (a password, a key) stays on the clipboard and is one Ctrl+V
+  /// away, which defeats the point of an idle auto-lock. Only an exact
+  /// substring of the note just locked is cleared, and only above
+  /// [_clipboardPurgeMinLength], so unrelated clipboard contents survive.
+  ///
+  /// Best-effort: there is no platform clipboard in headless tests, and the
+  /// user may have copied from an app Scrib cannot see.
+  Future<void> _purgeClipboardIfFrom(String content) async {
+    if (content.length < _clipboardPurgeMinLength) return;
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = data?.text;
+      if (text == null || text.length < _clipboardPurgeMinLength) return;
+      if (!content.contains(text)) return;
+      await Clipboard.setData(const ClipboardData(text: ''));
+    } catch (e) {
+      if (kDebugMode) debugPrint('Clipboard purge skipped: $e');
+    }
   }
 
   /// Whether any open tab is currently lockable.
@@ -570,16 +695,37 @@ class EditorProvider extends ChangeNotifier {
   /// on disk immediately (also persisting any unsaved edits). If the tab has
   /// no path yet, the new password simply applies to the next save.
   /// Returns false when the active tab cannot have its password changed.
+  /// Re-encrypt the active tab's file under [newPassword].
+  ///
+  /// Two ordering rules, both load-bearing:
+  ///
+  /// 1. The path must already be a `.scrb`. This is the only writeScrbFile
+  ///    caller outside [_saveTabToDisk], so without the check it is the one
+  ///    place ciphertext can land in a `.txt` or `.rtf` (reachable via Ctrl+E,
+  ///    which flips isEncrypted without touching filePath).
+  /// 2. [EditorTab.password] is committed only AFTER the write succeeds. On a
+  ///    throw the UI tells the user the change failed, so they keep using the
+  ///    old password; if the tab had already taken the new one, the next save
+  ///    would silently re-encrypt the file under a passphrase they were told
+  ///    was not applied. There is no password recovery, so that permanently
+  ///    locks them out of their own note.
   Future<bool> changeActivePassword(String newPassword) async {
     final tab = activeTab;
     if (tab == null || !tab.isEncrypted || tab.isLocked) return false;
-    tab.password = newPassword;
-    if (tab.filePath != null) {
-      final written = tab.snapshotForSave();
-      await _fileService.writeScrbFile(
-          tab.filePath!, written.fileContent, newPassword);
-      tab.markSaved(written);
+
+    if (tab.filePath == null) {
+      // No file yet: the new password simply applies to the first save.
+      tab.password = newPassword;
+      notifyListeners();
+      return true;
     }
+    if (!tab.hasScrbPath) return false; // ciphertext only ever goes into .scrb
+
+    final written = tab.snapshotForSave();
+    await _fileService.writeScrbFile(
+        tab.filePath!, written.fileContent, newPassword);
+    tab.password = newPassword;
+    tab.markSaved(written);
     notifyListeners();
     return true;
   }
@@ -812,6 +958,20 @@ class EditorProvider extends ChangeNotifier {
         (t) => t.filePath != null && canonicalPath(t.filePath!) == canonical);
   }
 
+  /// Whether a tab OTHER than [exclude] is already bound to [path].
+  ///
+  /// Two tabs on one file is a data-loss state, not a display quirk: both are
+  /// dirty against their own copy, and the auto-save loop writes both in the
+  /// same pass, so the second write silently discards the first tab's edits.
+  /// Save As is the reachable route, since it takes an arbitrary path.
+  bool isPathOpenInOtherTab(String path, EditorTab exclude) {
+    final canonical = canonicalPath(path);
+    return _tabs.any((t) =>
+        !identical(t, exclude) &&
+        t.filePath != null &&
+        canonicalPath(t.filePath!) == canonical);
+  }
+
   // File operations
   Future<void> openFile(String path) async {
     // Check if already open
@@ -880,6 +1040,7 @@ class EditorProvider extends ChangeNotifier {
       _activeTabIndex = _tabs.length - 1;
     }
 
+    await stampDiskState(tab);
     await _settingsService.addRecentFile(path);
     _invalidateActiveText();
     notifyListeners();
@@ -924,6 +1085,7 @@ class EditorProvider extends ChangeNotifier {
       _activeTabIndex = _tabs.length - 1;
     }
 
+    await stampDiskState(tab);
     await _settingsService.addRecentFile(path);
     _invalidateActiveText();
     notifyListeners();
@@ -979,6 +1141,7 @@ class EditorProvider extends ChangeNotifier {
       tab.mode = mode;
       tab.deltaJson = deltaJson;
       tab.savedDeltaJson = deltaJson;
+      await stampDiskState(tab);
       _activeTabIndex = existingIndex;
     } else {
       final tab = EditorTab(
@@ -1008,6 +1171,7 @@ class EditorProvider extends ChangeNotifier {
         _tabs.add(tab);
         _activeTabIndex = _tabs.length - 1;
       }
+      await stampDiskState(tab);
     }
 
     await _settingsService.addRecentFile(path);
@@ -1021,7 +1185,7 @@ class EditorProvider extends ChangeNotifier {
   /// (an extension-blind write here previously let the close-tab Save flow
   /// put plaintext into a .scrb and the scrib_rich envelope into a .rtf).
   /// Returns false when the tab needs Save As or the write was refused.
-  Future<bool> saveActiveTab() async {
+  Future<bool> saveActiveTab({bool ignoreDiskChange = false}) async {
     final tab = activeTab;
     if (tab == null || tab.isLocked) return false;
 
@@ -1029,7 +1193,7 @@ class EditorProvider extends ChangeNotifier {
       return false; // Need "Save As" - caller should handle
     }
 
-    final written = await _saveTabToDisk(tab);
+    final written = await _saveTabToDisk(tab, ignoreDiskChange: ignoreDiskChange);
     if (written == null) return false;
     tab.markSaved(written);
     notifyListeners();
@@ -1043,12 +1207,26 @@ class EditorProvider extends ChangeNotifier {
 
     final written = tab.snapshotForSave();
     final content = written.fileContent;
+    final lower = path.toLowerCase();
 
+    // Same container rules the background path enforces, applied here too:
+    // this is the OTHER entry point that writes a caller-chosen path (Save As,
+    // the extension swaps, the untitled-tab rename), and it previously took
+    // whatever it was handed. Ciphertext must land only in a .scrb, and a rich
+    // Delta must not be written verbatim into a .txt, where the scrib_rich
+    // envelope shows up as JSON in every other editor.
     if (encrypted && password != null) {
+      if (!lower.endsWith('.scrb')) return false;
       await _fileService.writeScrbFile(path, content, password);
       tab.isEncrypted = true;
       tab.password = password;
     } else {
+      if (lower.endsWith('.scrb')) return false; // plaintext never into a .scrb
+      if (written.mode == EditorMode.richText &&
+          written.deltaJson.isNotEmpty &&
+          !lower.endsWith('.rtf')) {
+        return false; // caller must convert to RTF or keep the .scrb
+      }
       // RTF saves are handled by the caller (main_screen via RtfService) before
       // this method is called, so plain writeTxtFile is correct for all remaining cases.
       await _fileService.writeTxtFile(path, content);
@@ -1058,6 +1236,7 @@ class EditorProvider extends ChangeNotifier {
 
     tab.filePath = path;
     tab.fileName = _fileService.getFileName(path);
+    await stampDiskState(tab);
     tab.markSaved(written);
     await _settingsService.addRecentFile(path);
     notifyListeners();
@@ -1090,6 +1269,7 @@ class EditorProvider extends ChangeNotifier {
     tab.isEncrypted = false;
     tab.password = null;
     tab.markSaved(written);
+    unawaited(stampDiskState(tab));
     unawaited(_settingsService.addRecentFile(path));
     notifyListeners();
   }

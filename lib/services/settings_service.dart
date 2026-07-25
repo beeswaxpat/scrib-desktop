@@ -117,9 +117,25 @@ class SettingsService extends ChangeNotifier {
     await _settingsBox.put('recentFiles', files);
   }
 
+  /// Clear the recent-files list AND rewrite the box on disk.
+  ///
+  /// Hive is an append-only log: `put` writes a new frame and leaves the old
+  /// one in the file, so without the compaction the note paths the user just
+  /// asked to forget are still sitting in `%APPDATA%` in plain text. Compaction
+  /// rewrites the file from live values only.
   Future<void> clearRecentFiles() async {
     await _settingsBox.put('recentFiles', <String>[]);
+    await _compactQuietly();
     notifyListeners();
+  }
+
+  /// Compaction is housekeeping: a failure must never take down the caller.
+  Future<void> _compactQuietly() async {
+    try {
+      await _settingsBox.compact();
+    } catch (e) {
+      if (kDebugMode) debugPrint('Hive compaction skipped: $e');
+    }
   }
 
   // Default save location
@@ -160,8 +176,12 @@ class SettingsService extends ChangeNotifier {
     );
   }
 
+  /// Delete the stored session and rewrite the box, so the paths of the notes
+  /// that were open are not left behind in Hive's append-only log. Turning
+  /// session restore off is a privacy action, not just a preference.
   Future<void> clearSession() async {
     await _settingsBox.delete('sessionJson');
+    await _compactQuietly();
   }
 
   List<Map<String, dynamic>> get sessionTabs {

@@ -252,4 +252,28 @@ void main() {
       expect(fs.getFileName('file.txt'), 'file.txt');
     });
   });
+
+  group('read-path robustness', () {
+    test('a non-UTF-8 text file opens via the Latin-1 fallback', () async {
+      final p = '${tmp.path}${Platform.pathSeparator}legacy.log';
+      // 0xE9 is 'e-acute' in cp1252/Latin-1 and invalid on its own in UTF-8.
+      // Windows tools write files like this constantly; refusing them made
+      // ordinary .log / .csv / .ini files unopenable.
+      await File(p).writeAsBytes([0x63, 0x61, 0x66, 0xE9]);
+      expect(await fs.readTxtFile(p), 'café');
+    });
+
+    test('a file larger than the read cap is refused, not loaded', () async {
+      final p = '${tmp.path}${Platform.pathSeparator}huge.txt';
+      final f = File(p);
+      final sink = f.openWrite();
+      final chunk = List<int>.filled(1024 * 1024, 0x41);
+      for (var i = 0; i < FileService.maxReadBytes ~/ chunk.length + 1; i++) {
+        sink.add(chunk);
+      }
+      await sink.close();
+      await expectLater(fs.readTxtFile(p),
+          throwsA(isA<ScribFileTooLargeException>()));
+    });
+  });
 }

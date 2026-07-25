@@ -223,8 +223,11 @@ void main() {
       final bad = p('bad.txt');
       final after = p('after.txt');
       await File(before).writeAsString('first');
-      // Invalid UTF-8: readTxtFile throws ScribFileReadException on decode.
-      await File(bad).writeAsBytes([0xC3, 0x28, 0xFF, 0xFE]);
+      // A DIRECTORY where a note is expected: readTxtFile cannot read it and
+      // throws ScribFileReadException. (Invalid UTF-8 no longer works as the
+      // trigger here: readTxtFile falls back to Latin-1 so that legacy-encoded
+      // .log / .csv / .ini files open instead of being refused.)
+      await Directory(bad).create();
       await File(after).writeAsString('last');
 
       await settings.saveSession([

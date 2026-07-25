@@ -805,10 +805,13 @@ class _MainScreenState extends State<MainScreen> {
         passwordForNewEncryption: password,
         confirmLossyRtf: () => _confirmLossyRtfSave(context),
         confirmOverwrite: (p) => _confirmOverwrite(context, p),
+        confirmExternalChange: (p) => _confirmExternalChange(context, p),
       );
       if (!result.ok) {
         if (!context.mounted) return;
-        if (result.error == saveOverwriteDeclined) {
+        if (result.error == saveExternalChangeDeclined) {
+          _showSnack(context, 'Not saved: this file changed on disk.');
+        } else if (result.error == saveOverwriteDeclined) {
           // The user declined the replacement, so nothing was written and the
           // tab is still dirty. Say so — silence after Ctrl+S reads as success.
           _showSnack(context, 'Not saved — the existing file was kept.');
@@ -860,8 +863,11 @@ class _MainScreenState extends State<MainScreen> {
       );
       if (!result.ok) {
         if (!context.mounted) return;
-        if (result.error == saveOverwriteDeclined) {
-          _showSnack(context, 'Not saved — the existing file was kept.');
+        if (result.error == savePathAlreadyOpen) {
+          _showSnack(context,
+              'That file is already open in another tab. Close it first.');
+        } else if (result.error == saveOverwriteDeclined) {
+          _showSnack(context, 'Not saved: the existing file was kept.');
         } else if (result.error != null && result.error != 'Cancelled') {
           _showSnack(context, 'Could not save file');
         }
@@ -870,6 +876,22 @@ class _MainScreenState extends State<MainScreen> {
     } finally {
       if (processing) _setProcessing(null);
     }
+  }
+
+  /// Confirmation shown when the file changed on disk since Scrib last read or
+  /// wrote it. Saving would replace whatever the other application wrote, and
+  /// AtomicWrite leaves no backup, so this is the user's only chance to stop.
+  Future<bool> _confirmExternalChange(BuildContext context, String path) {
+    if (!context.mounted) return Future.value(false);
+    final name = path.split(Platform.pathSeparator).last;
+    return showScribConfirm(
+      context,
+      title: 'File Changed on Disk',
+      message: '"$name" was modified by another program since you opened it. '
+          'Saving now replaces those changes with your version, and they '
+          'cannot be recovered.',
+      confirmLabel: 'Overwrite',
+    );
   }
 
   /// Confirmation shown before a save writes over a DIFFERENT file that the
@@ -942,6 +964,19 @@ class _MainScreenState extends State<MainScreen> {
 
         final ext = tab.isEncrypted ? 'scrb' : 'txt';
         final path = '$defaultDir${Platform.pathSeparator}$newName.$ext';
+
+        // Naming an untitled tab picks a destination the user never browsed
+        // to, and the write replaces whatever is there with no backup. The
+        // file-backed branch above already asks; this one has to as well.
+        if (await File(path).exists()) {
+          if (!context.mounted) return;
+          if (!await _confirmOverwrite(context, path)) {
+            // Keep the new label, but leave the tab untitled so nothing is
+            // written over the existing file.
+            editor.renameTab(index, newName);
+            return;
+          }
+        }
 
         if (tab.isEncrypted && tab.password == null) {
           if (!context.mounted) return;
