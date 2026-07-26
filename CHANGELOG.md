@@ -97,7 +97,7 @@ is recommended.
   hostile note files, the unsigned download, and Windows paging.
 
 ### Tests
-- 533 to 613 tests.
+- 518 to 613 tests.
 
 ## [1.9.0] - 2026-07-16 - Save integrity, exact find and replace, and RTF fidelity
 
