@@ -52,9 +52,11 @@ side of the line a finding falls on.
 bugs, though concrete improvements to any of them are welcome:
 
 - **Whoever supplied the note file you open.** A `.scrb`, `.rtf` or `.txt`
-  from someone else is untrusted input, parsed with no sandbox and no time or
-  memory budget: a crafted `.rtf` can hang the UI thread, and no read path
-  caps input size. Scrib does enforce an http/https/mailto scheme allowlist on
+  from someone else is untrusted input, parsed with no sandbox. Since 1.10.0
+  reads are capped at 64 MB and `.rtf`, table and image payloads are bounded,
+  so a crafted note can no longer hang the app or exhaust memory, but the
+  parsing itself is still unsandboxed and has no time budget. Scrib does
+  enforce an http/https/mailto scheme allowlist on
   RTF import and again at link launch, restricts image embeds to `data:` URIs,
   and has no network stack at all. It does **not** apply that allowlist to
   rich text pasted from another application, or to links written back out into
@@ -80,14 +82,19 @@ bugs, though concrete improvements to any of them are welcome:
   note being locked, but Windows Clipboard History and Cloud Clipboard keep
   their own copies, which Scrib cannot reach.
 - **A compromised machine** (key-logger, RAM dump, attached debugger, a
-  malicious build already running) and **brute-forcing a weak password**. The
-  password strength meter scores length and character classes only, so it
-  rates dictionary passwords as strong; treat it as a hint, not a check.
+  malicious build already running) and **brute-forcing a weak password**. Since
+  1.10.0 the strength meter accounts for common passwords, keyboard runs and
+  repeated characters as well as length and character classes, so it no longer
+  rates obvious dictionary passwords as strong. It is still a hint, not a
+  check: PBKDF2 at 100,000 iterations raises the cost of an offline guess but
+  does not make one infeasible.
 - **Recovery of a plaintext file you later encrypted.** Converting an existing
-  `.txt` or `.rtf` writes the `.scrb` and then removes the original, along with
-  any `.scrib-bak` / `.scrib-tmp` sibling holding a copy of it. Removing a file
-  cannot guarantee its bytes are gone: on an SSD, a snapshotted volume, a
-  backup, or a synced folder the pre-encryption copy may survive. For notes
+  `.txt` or `.rtf` writes the `.scrb`, then overwrites the original's bytes
+  before removing it, and does the same to any `.scrib-bak` / `.scrib-tmp`
+  sibling holding a copy (1.10.0 and later; earlier versions deleted without
+  overwriting). Overwriting cannot guarantee the bytes are gone: on an SSD, a
+  snapshotted volume, a backup, or a synced folder the pre-encryption copy may
+  survive. For notes
   that must never exist in plaintext, create the note encrypted rather than
   converting one.
 - **Filename and path disclosure.** Recent files, the session snapshot, window
