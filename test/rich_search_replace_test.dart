@@ -15,7 +15,7 @@ import 'package:scrib_desktop/widgets/search_bar_widget.dart';
 /// Rich-mode find/replace must treat match indices as QUILL DOCUMENT offsets:
 /// every embed (image/table) occupies exactly one position in the document,
 /// so search text that strips embeds shifts every following match and lets
-/// Replace / Replace All destroy embeds and mangle neighbouring characters.
+/// Replace / Replace All destroy embeds and mangle neighboring characters.
 /// These tests pin the offset-faithful behavior around embeds, plus the
 /// match-verify guard, Shift+Enter/F3 navigation, the option toggles, and
 /// selection prefill.

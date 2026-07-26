@@ -37,7 +37,7 @@ Built by [Beeswax Pat](https://scrib.cfd/) with [Claude](https://claude.ai) · [
 
 **Search.** Find (`Ctrl+F`) with match-case and whole-word. Find and Replace (`Ctrl+H`) operates on exact document positions, so notes containing images or tables are not corrupted. Search across all open tabs (`Ctrl+Shift+F`), including table cell text. Go to line (`Ctrl+G`).
 
-**Files.** Open `.txt`, `.scrb`, `.rtf`, `.md`, `.log`, `.csv`, `.json`, `.xml`, `.yaml`, `.yml`, `.ini`, `.cfg`. Save as `.txt`, `.scrb`, `.rtf`. Drag and drop from Explorer, including multi-file drops. RTF import and export round-trips bold, italic, colours, fonts, sizes, lists, checklists, headers, quotes, links, and sub/superscript through Word and WordPad.
+**Files.** Open `.txt`, `.scrb`, `.rtf`, `.md`, `.log`, `.csv`, `.json`, `.xml`, `.yaml`, `.yml`, `.ini`, `.cfg`. Save as `.txt`, `.scrb`, `.rtf`. Drag and drop from Explorer, including multi-file drops. RTF import and export round-trips bold, italic, colors, fonts, sizes, lists, checklists, headers, quotes, links, and sub/superscript through Word and WordPad.
 
 **Save safety.** Writes are atomic, so a crash mid-save cannot truncate a file. Scrib asks before replacing a file you did not pick, before overwriting a file another program changed while it was open, and before writing over a note another tab already has open. A save that is refused leaves the tab unsaved rather than reporting success.
 

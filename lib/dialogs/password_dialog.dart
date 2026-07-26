@@ -427,19 +427,19 @@ bool _isYearAt(String s, int start) {
   return year >= 1900 && year <= 2099;
 }
 
-/// Only this many leading characters are pattern-analysed; anything past it is
+/// Only this many leading characters are pattern-analyzed; anything past it is
 /// charged at the flat per-character rate. Nobody types a four-kilobyte
 /// password, but somebody can paste one, and the meter reruns on every
 /// keystroke, so the pattern walk needs a ceiling.
-const int _maxAnalysedLength = 256;
+const int _maxAnalyzedLength = 256;
 
 /// Rough guess-count estimate in bits: the alphabet a cracker would have to
 /// walk, minus everything that a rule set generates for free.
 double _estimateBits(String pw) {
   final folded = pw.toLowerCase();
-  final lower = folded.length <= _maxAnalysedLength
+  final lower = folded.length <= _maxAnalyzedLength
       ? folded
-      : folded.substring(0, _maxAnalysedLength);
+      : folded.substring(0, _maxAnalyzedLength);
   final hasLower = RegExp(r'[a-z]').hasMatch(pw);
   final hasUpper = RegExp(r'[A-Z]').hasMatch(pw);
   final hasDigit = RegExp(r'[0-9]').hasMatch(pw);
@@ -480,7 +480,7 @@ double _estimateBits(String pw) {
       i++;
     }
   }
-  // Anything past the analysed prefix is charged flat.
+  // Anything past the analyzed prefix is charged flat.
   return bits + (folded.length - lower.length) * perChar;
 }
 

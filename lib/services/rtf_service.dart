@@ -6,7 +6,7 @@ import 'format_utils.dart';
 ///
 /// Supports: bold, italic, underline, strikethrough, sub/superscript,
 /// hyperlinks (as `{\field{\*\fldinst HYPERLINK ...}}` fields), font family,
-/// font size, text colour and highlight (via a `\colortbl`), headers, bullet
+/// font size, text color and highlight (via a `\colortbl`), headers, bullet
 /// lists, numbered lists, checklists, and block quotes. Inline formatting is
 /// group-scoped on import (a `}` restores the state that was active at the
 /// matching `{`), unknown `{\*\...}` destination groups are skipped per the
@@ -31,7 +31,7 @@ class RtfService {
   static const int _maxFieldDepth = 8;
 
   // A crafted \colortbl must not turn into an unbounded allocation, and a
-  // document cannot plausibly need more distinct colours than this on export.
+  // document cannot plausibly need more distinct colors than this on export.
   static const int _maxColorTableEntries = 1024;
 
   // Compiled once — the parser hits these on every token, so per-loop
@@ -74,7 +74,7 @@ class RtfService {
     final fonts = <String>{'Times New Roman'}; // Default font at index 0
     final colors = <int>[];
 
-    // First pass: collect the fonts and colours the document uses. Both need a
+    // First pass: collect the fonts and colors the document uses. Both need a
     // header table emitted before any run can reference them by index.
     for (final op in ops) {
       if (op is! Map) continue;
@@ -102,10 +102,10 @@ class RtfService {
     }
     fontTable.write('}');
 
-    // Build colour table. Index 0 is the conventional "auto" slot (the leading
-    // ';'), so a colour's \cf/\highlight index is its position in `colors`
+    // Build color table. Index 0 is the conventional "auto" slot (the leading
+    // ';'), so a color's \cf/\highlight index is its position in `colors`
     // PLUS ONE. _inlineFormatting must apply the same offset or every
-    // coloured run would be painted with its neighbour's colour.
+    // colored run would be painted with its neighbor's color.
     final colorTable = StringBuffer();
     if (colors.isNotEmpty) {
       colorTable.write('{\\colortbl;');
@@ -350,7 +350,7 @@ class RtfService {
 
   /// Read `{\colortbl;\red255\green0\blue0;...}` into 0xRRGGBB values in
   /// declaration order. A bare `;` entry (the conventional "auto" slot at
-  /// index 0) yields null so `\cf0` correctly means "no explicit colour".
+  /// index 0) yields null so `\cf0` correctly means "no explicit color".
   static List<int?> _parseColorTable(String rtfContent) {
     final colors = <int?>[];
     const marker = '{\\colortbl';
@@ -389,8 +389,8 @@ class RtfService {
     return colors;
   }
 
-  /// Quill colour attribute value ('#rgb', '#rrggbb', '#aarrggbb', 'rgb(...)')
-  /// as 0xRRGGBB, or null when it is not a colour this writer can express.
+  /// Quill color attribute value ('#rgb', '#rrggbb', '#aarrggbb', 'rgb(...)')
+  /// as 0xRRGGBB, or null when it is not a color this writer can express.
   /// Returning null must leave NO trace in the output: an attribute map that
   /// carries only unexportable values has to emit nothing at all.
   static int? _parseColorValue(Object? value) {
@@ -416,9 +416,9 @@ class RtfService {
     return (component(1) << 16) | (component(2) << 8) | component(3);
   }
 
-  /// Colour for a `\cfN` / `\highlightN` index, bounds-checked: a crafted
+  /// Color for a `\cfN` / `\highlightN` index, bounds-checked: a crafted
   /// \cf99 against a two-entry table must not throw and must not paint a
-  /// colour the document never declared.
+  /// color the document never declared.
   static String? _colorAt(List<int?> colors, int? index) {
     if (index == null || index < 0 || index >= colors.length) return null;
     final rgb = colors[index];
@@ -943,7 +943,7 @@ class RtfService {
   /// opened '{' for any non-empty attribute map and then wrote the delimiter
   /// space unconditionally, so an attribute the writer does not export (an
   /// alignment, an indent) turned into a literal space in the user's document
-  /// on every save. Colour and highlight are exported properly now, against
+  /// on every save. Color and highlight are exported properly now, against
   /// the \colortbl deltaToRtf emits.
   static String _inlineFormatting(
       Map<String, dynamic> attrs, List<String> fontList, List<int> colorList) {

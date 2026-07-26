@@ -61,8 +61,8 @@ is recommended.
   bounded so a crafted note cannot hang or exhaust memory.
 
 **Rich text**
-- Coloured and highlighted text no longer has a stray space inserted on every
-  save to RTF, and the colours are now exported rather than dropped.
+- Colored and highlighted text no longer has a stray space inserted on every
+  save to RTF, and the colors are now exported rather than dropped.
 - Table cell edits are no longer lost when a tab closes mid-edit, and copying a
   table no longer causes edits to land in the wrong copy.
 - RTF import keeps the first paragraph of files without a font table, and keeps
@@ -70,7 +70,7 @@ is recommended.
 
 **Search**
 - Whole-word search no longer skips matches that follow a rejected candidate,
-  and now recognises accented and non-Latin words. Replace All previously
+  and now recognizes accented and non-Latin words. Replace All previously
   corrupted them.
 - Replace no longer throws after a Replace All that ended on a trailing match.
 

@@ -16,7 +16,7 @@
 /// are ignored. Parse depth is capped so pathological nesting raises a
 /// [CalcException] instead of overflowing the stack, and a `^` whose result
 /// overflows raises one too, so a runaway tower like `9^9^9` is an error
-/// rather than an infinity travelling on through the rest of the expression.
+/// rather than an infinity traveling on through the rest of the expression.
 library;
 
 import 'dart:math' as math;

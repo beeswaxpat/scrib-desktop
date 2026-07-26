@@ -5,7 +5,7 @@ import 'package:scrib_desktop/providers/editor_provider.dart';
 import 'package:scrib_desktop/services/file_service.dart';
 import 'package:scrib_desktop/services/settings_service.dart';
 
-/// Batch tab-close (closeTabs) behaviour used by the right-click tab menu
+/// Batch tab-close (closeTabs) behavior used by the right-click tab menu
 /// (Close Others / Close to the Right / Close All).
 void main() {
   late Directory tmp;

@@ -29,7 +29,7 @@ Future<void> pickAndInsertTable(
 }
 
 /// Inserts [table] as its own block (surrounded by line breaks so Quill renders
-/// it as a full-width block rather than inline with neighbouring text).
+/// it as a full-width block rather than inline with neighboring text).
 void insertTableEmbed(QuillController controller, ScribTable table) {
   final docLen = controller.document.length;
   final sel = controller.selection;
