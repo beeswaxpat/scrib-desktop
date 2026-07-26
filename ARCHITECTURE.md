@@ -205,7 +205,7 @@ Auto-save timer                 EditorProvider._autoSaveAll
 Close tab (dirty, chose Save)   MainScreen._closeTabByIndex
                                   -> same flow as Ctrl+S           Tab stays open if
                                                                     the save is refused
-                                                                    or cancelled
+                                                                    or canceled
 
 Quit                            main.dart onWindowClose
                                   -> saveAllSaveable               Refuses to discard
