@@ -1,4 +1,4 @@
-﻿name: scrib_desktop
+name: scrib_desktop
 description: "The encrypted Notepad. No tracking. No cloud. Just notes."
 publish_to: 'none'
 
@@ -19,7 +19,7 @@ dependencies:
 
   # File system
   path_provider: ^2.1.6
-  file_picker: ^8.1.6
+  file_picker: ^12.0.0-beta.7
 
   # FFI â€” used for Windows atomic file replace (MoveFileExW)
   ffi: ^2.1.0
