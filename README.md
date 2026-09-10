@@ -15,9 +15,11 @@
 
 A tabbed text editor for Windows that encrypts files with AES-256. Plain text, rich text, and its own `.scrb` format. Fully offline: no network code, no telemetry, no accounts.
 
-Built by [Beeswax Pat](https://scrib.cfd/) with [Claude](https://claude.ai) · [GNU GPL v3](LICENSE)
+Built by [Beeswax Pat](https://scrib.blog/) with [Claude](https://claude.ai) · [GNU GPL v3](LICENSE)
 
 **[Download](https://github.com/beeswaxpat/scrib-desktop/releases)** · **[Changelog](CHANGELOG.md)** · **[Architecture](ARCHITECTURE.md)** · **[Security](SECURITY.md)**
+
+On your phone? Scrib for iPhone and Android encrypts every note on the device: [App Store](https://apps.apple.com/us/app/scrib-encrypted-offline-notes/id6766088339) · [Google Play](https://play.google.com/store/apps/details?id=com.beeswaxpat.jot).
 
 ---
 
