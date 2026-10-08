@@ -1,4 +1,4 @@
-﻿name: scrib_desktop
+name: scrib_desktop
 description: "The encrypted Notepad. No tracking. No cloud. Just notes."
 publish_to: 'none'
 
@@ -44,7 +44,7 @@ dependencies:
 
   # Opens note links in the default browser (already transitive via
   # flutter_quill; declared because we import it directly).
-  url_launcher: ^6.3.0
+  url_launcher: ^6.3.3
 
 dev_dependencies:
   flutter_test:
