@@ -4,7 +4,11 @@ All notable changes to Scrib Desktop are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.10.2] - 2026-10-17 - Images in .rtf files
+
+A feature release. A rich-text note saved as `.rtf` now keeps its images, so
+it can stay readable in Word and WordPad without losing its pictures. The
+`.scrb` file format is unchanged.
 
 ### Added
 
