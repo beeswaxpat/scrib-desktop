@@ -274,7 +274,22 @@ class _ScribDesktopAppState extends State<ScribDesktopApp> with WindowListener {
       if (kDebugMode) debugPrint('Teardown on quit failed: $e');
     }
 
-    await windowManager.destroy();
+    // Quit through the normal close path, not windowManager.destroy().
+    // destroy() posts WM_QUIT, so the message loop ends while the window is
+    // still active and focused and the Flutter view is torn down afterwards:
+    // Windows then delivers focus messages to a half-destroyed view and the
+    // quit ended in an access violation inside flutter_windows.dll (exit code
+    // 0xC000041D). Dropping the close guard and closing again lets Windows
+    // deactivate and destroy the window first, the shutdown order the runner
+    // was written for. The listener is already removed, so this second
+    // WM_CLOSE does not re-enter this handler.
+    try {
+      await windowManager.setPreventClose(false);
+      await windowManager.close();
+    } catch (e) {
+      if (kDebugMode) debugPrint('Close on quit failed: $e');
+      await windowManager.destroy();
+    }
   }
 
   void _debouncedSaveWindowState() {
@@ -394,7 +409,8 @@ class _StartupFailureApp extends StatelessWidget {
                   Align(
                     alignment: Alignment.centerRight,
                     child: FilledButton(
-                      onPressed: () => windowManager.destroy(),
+                      // close(), not destroy(): see onWindowClose.
+                      onPressed: () => windowManager.close(),
                       child: const Text('Close'),
                     ),
                   ),

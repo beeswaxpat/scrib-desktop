@@ -868,10 +868,19 @@ class _MainScreenState extends State<MainScreen> {
               'That file is already open in another tab. Close it first.');
         } else if (result.error == saveOverwriteDeclined) {
           _showSnack(context, 'Not saved: the existing file was kept.');
+        } else if (result.error == saveTabSwitched) {
+          _showSnack(context,
+              'Not saved: the tab changed while the Save dialog was open.');
         } else if (result.error != null && result.error != 'Cancelled') {
           _showSnack(context, 'Could not save file');
         }
         return;
+      }
+      // The name was given the extension the tab's format needs (rich text
+      // goes to .rtf, plain to .txt, encrypted to .scrb). Say where it went.
+      if (result.extensionChanged && result.newPath != null && context.mounted) {
+        final newName = result.newPath!.split(Platform.pathSeparator).last;
+        _showSnack(context, 'Saved as $newName');
       }
     } finally {
       if (processing) _setProcessing(null);
@@ -962,8 +971,23 @@ class _MainScreenState extends State<MainScreen> {
         final dir = Directory(defaultDir);
         if (!await dir.exists()) await dir.create(recursive: true);
 
-        final ext = tab.isEncrypted ? 'scrb' : 'txt';
+        // Rich text needs a .rtf: saveActiveTabAs refuses a rich note over a
+        // .txt, so naming an untitled rich tab used to write nothing at all.
+        final isRich =
+            tab.mode == EditorMode.richText && tab.deltaJson.isNotEmpty;
+        final ext = tab.isEncrypted ? 'scrb' : (isRich ? 'rtf' : 'txt');
         final path = '$defaultDir${Platform.pathSeparator}$newName.$ext';
+
+        // Two tabs bound to one file overwrite each other's edits. The
+        // Replace prompt below would not mention that the file is open here.
+        if (editor.isPathOpenInOtherTab(path, tab)) {
+          editor.renameTab(index, newName);
+          if (context.mounted) {
+            _showSnack(context,
+                'Not saved: "$newName.$ext" is open in another tab.');
+          }
+          return;
+        }
 
         // Naming an untitled tab picks a destination the user never browsed
         // to, and the write replaces whatever is there with no backup. The
@@ -992,7 +1016,18 @@ class _MainScreenState extends State<MainScreen> {
         if (currentIndex == -1) return;
         editor.setActiveTab(currentIndex);
         try {
-          await editor.saveActiveTabAs(path, encrypted: tab.isEncrypted, password: tab.password);
+          final saved = await editor.saveActiveTabAs(path,
+              encrypted: tab.isEncrypted, password: tab.password);
+          if (!saved) {
+            // Refused (for example a rich note with images or tables, which
+            // RTF cannot hold). Keep the label and leave the tab untitled.
+            final i = editor.tabs.indexOf(tab);
+            if (i != -1) editor.renameTab(i, newName);
+            if (context.mounted) {
+              _showSnack(context,
+                  'Not saved. Use Save As (Ctrl+Shift+S) to pick a format.');
+            }
+          }
         } catch (_) {
           if (context.mounted) _showSnack(context, 'Could not save file');
         }

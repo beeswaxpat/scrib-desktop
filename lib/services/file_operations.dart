@@ -22,6 +22,10 @@ const String saveExternalChangeDeclined = 'External change declined';
 /// open. Two tabs on one file overwrite each other on the next auto-save.
 const String savePathAlreadyOpen = 'Already open in another tab';
 
+/// Error string returned when the active tab changed while the Save As dialog
+/// was open. The native dialog does not block the Scrib window.
+const String saveTabSwitched = 'Active tab changed';
+
 /// Outcome of a save / save-as operation. The `extensionChanged` flag tells
 /// the caller whether the on-disk file was renamed to a different extension
 /// (e.g. .scrb → .txt when decrypting) so it can surface a SnackBar to the
@@ -297,19 +301,20 @@ class FileOperations {
     );
     if (path == null) return SaveResult.failure('Cancelled');
 
+    // The tab's format decides the extension, whatever the user typed.
+    final effectivePath = saveAsTarget(path,
+        encrypted: tab.isEncrypted,
+        rich: tab.mode == EditorMode.richText && tab.deltaJson.isNotEmpty);
+
     // Binding a second tab to a file another tab already holds means the next
     // auto-save pass writes both, and whichever runs second silently discards
     // the other tab's edits. Refuse before anything is written.
-    if (editor.isPathOpenInOtherTab(path, tab)) {
+    if (editor.isPathOpenInOtherTab(effectivePath, tab)) {
       return SaveResult.failure(savePathAlreadyOpen);
     }
 
-    // If the tab is encrypted, force a .scrb extension even if the user omitted it.
-    final effectivePath = (tab.isEncrypted && !path.toLowerCase().endsWith('.scrb'))
-        ? _swapExtension(path, '.scrb')
-        : path;
     // The picker ran its native "replace?" check against `path`. When we
-    // retarget to a .scrb the user never saw, that confirmation does not apply
+    // retarget to a name the user never saw, that confirmation does not apply
     // to the file we are about to replace — ask again for the real destination.
     if (canonicalPath(effectivePath) != canonicalPath(path) &&
         await File(effectivePath).exists()) {
@@ -334,6 +339,14 @@ class FileOperations {
       if (!proceed) return SaveResult.failure('Cancelled');
     }
 
+    // The native dialog has no owner window, so Scrib stays clickable while it
+    // is open. saveActiveTabAs writes the ACTIVE tab: had the user switched
+    // tabs, another note's content would land in this file (with this tab's
+    // password for a .scrb) and that tab would be rebound to it. Refuse.
+    if (!identical(editor.activeTab, tab)) {
+      return SaveResult.failure(saveTabSwitched);
+    }
+
     // All dialogs are done — let the UI raise its progress overlay before the
     // slow encrypted write instead of after it (which showed nothing at all).
     onWillWrite?.call(isEncrypted);
@@ -352,11 +365,58 @@ class FileOperations {
         // exists at a path nothing was written to.
         if (!wrote) return SaveResult.failure('Tab is locked');
       }
-      return SaveResult.success(newPath: effectivePath);
+      return SaveResult.success(
+          newPath: effectivePath, extensionChanged: effectivePath != path);
     } catch (e) {
       if (kDebugMode) debugPrint('Save-as failed: $e');
       return SaveResult.failure(e.toString());
     }
+  }
+
+  /// The path Save As writes when the user picked [picked].
+  ///
+  /// The Windows save dialog adds no extension of its own, so a name typed
+  /// without one ("Meeting notes") comes back with none. Rich text written
+  /// there, or to a .txt, was refused by every write path (the scrib_rich
+  /// envelope would be JSON in other editors) and the note was never saved.
+  /// So the tab's format picks the container: encrypted goes to .scrb, rich
+  /// text to .rtf, plain text to .txt. Picking .scrb for a plain tab still
+  /// means "save an encrypted copy". A plain tab keeps any other extension
+  /// the user typed (.md, .log), since plain text is valid in all of them.
+  @visibleForTesting
+  static String saveAsTarget(String picked,
+      {required bool encrypted, required bool rich}) {
+    // Windows drops trailing dots and spaces from file names, so "Meeting."
+    // would be written as "Meeting" while the tab recorded "Meeting.".
+    picked = picked.replaceFirst(RegExp(r'[. ]+$'), '');
+    final ext = _extensionOf(picked);
+    final String wanted;
+    if (encrypted) {
+      wanted = '.scrb';
+    } else if (ext == '.scrb') {
+      return picked;
+    } else if (rich) {
+      wanted = '.rtf';
+    } else {
+      if (ext.isNotEmpty && ext != '.rtf') return picked;
+      wanted = '.txt';
+    }
+    if (ext == wanted) return picked;
+    // Swap one of our own extensions; append to anything else, so a dotted
+    // name like "Minutes 10.17" keeps its full stem.
+    if (ext == '.txt' || ext == '.rtf' || ext == '.scrb') {
+      return _swapExtension(picked, wanted);
+    }
+    return '$picked$wanted';
+  }
+
+  /// Lower-case extension of [path]'s file name including the dot, or '' when
+  /// the name has none.
+  static String _extensionOf(String path) {
+    final sep = path.lastIndexOf(RegExp(r'[\\/]'));
+    final name = path.substring(sep + 1);
+    final dot = name.lastIndexOf('.');
+    return dot > 0 ? name.substring(dot).toLowerCase() : '';
   }
 
   /// Removal of the pre-swap original after an encrypt/decrypt that changed the

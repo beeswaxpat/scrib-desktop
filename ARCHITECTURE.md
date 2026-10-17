@@ -155,7 +155,9 @@ because the snapshot holds the decrypted note and applying it would undo
 rebinds the tab's `filePath`, `fileName`, `isEncrypted` and `password` to that
 write. The destination extension and any overwrite confirmation belong to the
 caller (`FileOperations`, or the untitled branch of `MainScreen._renameTab`),
-not to this method.
+not to this method. It enforces the same containers as `_saveTabToDisk`: rich
+text goes only into `.rtf` (converted through `RtfService`, refused when the
+Delta carries image or table embeds) and plain text never into `.rtf`.
 
 **`EditorProvider.markTabSavedAs`** performs no write of its own: it records a
 write `FileOperations` already made through `FileService.writeRtfFile`, since
@@ -177,9 +179,12 @@ only code allowed to change a file's extension, and every swap goes through
 the `confirmOverwrite` callback first, which fails closed: with no callback
 wired, the swap is refused rather than replacing a file the user never chose.
 Each swap branch also deletes the pre-swap original, so an unguarded swap
-would destroy two files. `saveAs` re-asks when it retargets the picker's path
-to `.scrb`, because the native replace prompt applied to a path that is no
-longer the destination.
+would destroy two files. `saveAs` takes the extension from the tab's format
+(`saveAsTarget`): encrypted to `.scrb`, rich text to `.rtf`, plain text to
+`.txt` when the name has no extension. The Windows save dialog adds none of its
+own, so a typed name such as "Meeting notes" arrives bare. `saveAs` re-asks when
+it retargets the picker's path, because the native replace prompt applied to a
+path that is no longer the destination.
 
 ```
 User action                     Route                              Refusal behavior
@@ -212,6 +217,8 @@ Quit                            main.dart onWindowClose
                                      -> _saveTabToDisk per tab      dirty untitled or
                                                                     passwordless tabs;
                                                                     prompts instead
+                                  -> setPreventClose(false),
+                                     then windowManager.close()
 
 Lock tab (Ctrl+L / auto-lock)   EditorProvider.lockTab
                                   -> _saveTabToDisk first          Any save failure
@@ -238,12 +245,20 @@ Rename tab (untitled)           MainScreen._renameTab
                                   -> saveActiveTabAs              Writes into the
                                                                     default save location
                                                                     under the new name
+                                                                    (.rtf for rich text)
 ```
 
 `_saveTabToDisk` (background writes) refuses: no path, locked tab, encrypted
 without a password, encryption/extension mismatch, rich Delta over `.txt`,
 plain mode over `.rtf`, and embed-carrying Delta over `.rtf`. Refused tabs stay
 dirty so the quit backstop keeps refusing to discard them.
+
+Quit never calls `windowManager.destroy()`. That posts WM_QUIT, which ends the
+message loop while the window is still focused, so the Flutter view was torn
+down under live focus messages and quitting crashed inside
+`flutter_windows.dll` (exit code 0xC000041D). `onWindowClose` drops the close
+guard and calls `windowManager.close()`, so Windows deactivates and destroys
+the window through the runner's normal `WM_DESTROY` path.
 
 ## .scrb format
 

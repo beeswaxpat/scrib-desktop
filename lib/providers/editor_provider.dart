@@ -1222,14 +1222,24 @@ class EditorProvider extends ChangeNotifier {
       tab.password = password;
     } else {
       if (lower.endsWith('.scrb')) return false; // plaintext never into a .scrb
-      if (written.mode == EditorMode.richText &&
-          written.deltaJson.isNotEmpty &&
-          !lower.endsWith('.rtf')) {
+      final isRich = written.mode == EditorMode.richText &&
+          written.deltaJson.isNotEmpty;
+      if (isRich && !lower.endsWith('.rtf')) {
         return false; // caller must convert to RTF or keep the .scrb
       }
-      // RTF saves are handled by the caller (main_screen via RtfService) before
-      // this method is called, so plain writeTxtFile is correct for all remaining cases.
-      await _fileService.writeTxtFile(path, content);
+      if (!isRich && lower.endsWith('.rtf')) {
+        return false; // plain text into a .rtf produces a headerless file
+      }
+      if (isRich) {
+        // Writing the Delta as-is would put the scrib_rich JSON envelope into
+        // the .rtf. Convert, but never drop image/table embeds here: only the
+        // Save As path asks before an RTF write loses them.
+        if (deltaHasEmbeds(written.deltaJson)) return false;
+        await _fileService.writeRtfFile(
+            path, RtfService.deltaToRtf(written.deltaJson));
+      } else {
+        await _fileService.writeTxtFile(path, content);
+      }
       tab.isEncrypted = false;
       tab.password = null;
     }
