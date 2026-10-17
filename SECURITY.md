@@ -101,7 +101,9 @@ bugs, though concrete improvements to any of them are welcome:
   geometry and preferences live in an unencrypted Hive database under
   `%APPDATA%`. Note contents are encrypted; their names and paths are not, and
   Hive appends rather than rewrites, so clearing recent files or the session
-  does not immediately erase the earlier entries from that file.
+  does not immediately erase the earlier entries from that file. Versions
+  before 1.10.0 kept it in `%APPDATA%\com.beeswaxpat\scrib_desktop`; Scrib
+  copies that forward once and never deletes the old folder.
 
 ## Fixed security issues
 

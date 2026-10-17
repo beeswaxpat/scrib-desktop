@@ -8,12 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Settings were lost when upgrading to 1.10.0.** 1.10.0 changed the app's
+  Windows company and product names, which moved its settings folder from
+  `%APPDATA%\com.beeswaxpat\scrib_desktop` to
+  `%APPDATA%\Beeswax Pat\Scrib Desktop`. Upgraders started over with no
+  recent files, no restored session and default preferences. Your notes were
+  never affected. Scrib now copies the old settings forward once. Coming
+  straight from 1.9.0 or earlier, everything comes back. If you already used
+  1.10.0, only preferences you have not changed since are filled in (theme,
+  font, line numbers, auto-lock, session restore and recent files); your open
+  session and auto-save setting stay as they are. The old folder is left in
+  place; delete it yourself if you want those file paths gone.
 - **Scrib crashed when it closed.** Quitting ended in an access
   violation inside `flutter_windows.dll` (exit code 0xC000041D), with or
   without unsaved work. The quit flow called `windowManager.destroy()`, which
   stops the message loop while the window still has focus, so the Flutter view
   was torn down under live focus messages. Quit now closes the window the
-  normal way and the process exits cleanly. Reported in #25.
+  normal way and the process exits cleanly. Reported by [@BadrPost](https://github.com/BadrPost) in
+  [#25](https://github.com/beeswaxpat/scrib-desktop/issues/25).
 - **Rich text was not saved when the file name had no extension.** The Windows
   Save dialog adds no extension of its own, so typing a name like "Meeting
   notes" returned a bare path. Rich text cannot go into a plain file, so the
@@ -22,7 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `.rtf`, plain text gets `.txt` and encrypted notes get `.scrb`. A rich note
   saved as `.txt` is written as `.rtf`. A plain note keeps any other extension
   you type, such as `.md`. Scrib tells you the final name and asks before
-  replacing a different file. Reported in #25.
+  replacing a different file. Reported by [@BadrPost](https://github.com/BadrPost) in
+  [#25](https://github.com/beeswaxpat/scrib-desktop/issues/25).
 - **Naming an untitled rich-text tab saved nothing.** Renaming the tab wrote
   to a `.txt`, which rich text is refused from, so nothing happened. It now
   writes a `.rtf`. A note with images or tables (which RTF cannot hold) is left

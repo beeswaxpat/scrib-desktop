@@ -25,7 +25,8 @@ lib/
     file_operations.dart     Manual save / save-as decision tree, including the
                              encryption-toggle extension swap
     rtf_service.dart         Delta JSON to RTF and back
-    settings_service.dart    Hive-backed settings, session snapshot storage
+    settings_service.dart    Hive-backed settings, session snapshot storage,
+                             one-time import of the pre-1.10 settings folder
     table_embed.dart         ScribTable model + JSON codec for table embeds
     image_embed_service.dart Image picking, normalization, data-URI codec,
                              bounded decode cache

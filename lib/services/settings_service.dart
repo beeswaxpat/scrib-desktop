@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
 import 'package:path_provider/path_provider.dart';
@@ -8,12 +9,45 @@ import 'package:path_provider/path_provider.dart';
 class SettingsService extends ChangeNotifier {
   static const String _settingsBoxName = 'scrib_desktop_settings';
 
+  /// Set once the pre-1.10 settings have been brought over, so the import
+  /// runs a single time.
+  static const String _legacyImportedKey = 'legacySettingsImported';
+
+  /// Keys merged into a box that is already in use (someone who ran 1.10.0
+  /// and now has settings in both places). Only keys the current box lacks are
+  /// taken. Session and window state stay with the current box, so a session
+  /// the user switched off never comes back. Auto-save is left out too: a
+  /// 1.10.0 user has been relying on its default, and an old "off" must not
+  /// quietly stop it.
+  static const List<String> _legacyMergeKeys = [
+    'themeMode',
+    'accentColorIndex',
+    'fontFamily',
+    'fontSize',
+    'wordWrap',
+    'showLineNumbers',
+    'autoLockMinutes',
+    'restoreSession',
+    'recentFiles',
+  ];
+
   late Box<dynamic> _settingsBox;
 
   Future<void> init() async {
     final appDir = await getApplicationSupportDirectory();
     Hive.init(appDir.path);
     _settingsBox = await Hive.openBox(_settingsBoxName);
+    // 1.10.0 renamed the Windows company and product (Runner.rc), and
+    // path_provider builds this folder from those names. Settings moved from
+    // %APPDATA%\com.beeswaxpat\scrib_desktop to
+    // %APPDATA%\Beeswax Pat\Scrib Desktop, so upgraders lost recent files,
+    // the open session and every preference.
+    if (Platform.isWindows) {
+      final roaming = appDir.parent.parent.path;
+      final sep = Platform.pathSeparator;
+      await importLegacySettings('$roaming${sep}com.beeswaxpat$sep'
+          'scrib_desktop$sep$_settingsBoxName.hive');
+    }
   }
 
   /// Test-only initializer that opens the settings box in [directory] without
@@ -22,6 +56,53 @@ class SettingsService extends ChangeNotifier {
   Future<void> initForTests(String directory) async {
     Hive.init(directory);
     _settingsBox = await Hive.openBox(_settingsBoxName);
+  }
+
+  /// Bring settings over from the pre-1.10 box file at [legacyBoxFile].
+  ///
+  /// A box nobody has used yet takes every old entry, so an upgrade from 1.9
+  /// or earlier looks exactly as it did before. A box already in use only
+  /// gains the [_legacyMergeKeys] it is missing. The old file itself is never
+  /// opened, written, moved or deleted: opening it would let Hive lock, repair
+  /// or compact it, and an older Scrib may still use that folder. Hive reads a
+  /// temporary copy instead, which also salvages the readable entries of a
+  /// file cut short by a crash. Any failure leaves the settings as they were.
+  @visibleForTesting
+  Future<void> importLegacySettings(String legacyBoxFile) async {
+    Directory? scratch;
+    try {
+      if (_settingsBox.get(_legacyImportedKey) == true) return;
+      final file = File(legacyBoxFile);
+      if (!await file.exists()) return;
+      scratch = await Directory.systemTemp.createTemp('scrib_settings_import_');
+      const legacyName = '${_settingsBoxName}_legacy';
+      await file.copy(
+          '${scratch.path}${Platform.pathSeparator}$legacyName.hive');
+      final legacy =
+          await Hive.openBox<dynamic>(legacyName, path: scratch.path);
+      final Map<dynamic, dynamic> old;
+      try {
+        old = legacy.toMap();
+      } finally {
+        await legacy.close();
+      }
+      final unused = _settingsBox.isEmpty;
+      await _settingsBox.putAll({
+        for (final entry in old.entries)
+          if (unused ||
+              (_legacyMergeKeys.contains(entry.key) &&
+                  !_settingsBox.containsKey(entry.key)))
+            entry.key: entry.value,
+        _legacyImportedKey: true,
+      });
+    } catch (e) {
+      if (kDebugMode) debugPrint('Legacy settings import skipped: $e');
+    } finally {
+      // The copy holds recent-file paths; do not leave it in %TEMP%.
+      try {
+        await scratch?.delete(recursive: true);
+      } catch (_) {}
+    }
   }
 
   // Theme mode: 0 = system, 1 = light, 2 = dark
