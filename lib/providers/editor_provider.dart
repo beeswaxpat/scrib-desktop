@@ -16,9 +16,8 @@ import '../services/table_embed.dart';
 enum EditorMode { plainText, richText }
 
 /// True when [deltaJson] contains any non-text insert op (image or table
-/// embeds). RTF conversion drops those ops, so every Delta-to-RTF write path
-/// must check this and warn (manual save) or defer (auto-save) instead of
-/// silently discarding the embeds and marking the tab clean.
+/// embeds). RTF writes use [RtfService.exportDelta] instead, which reports
+/// only what RTF cannot keep (tables, SVG).
 bool deltaHasEmbeds(String deltaJson) {
   if (deltaJson.isEmpty) return false;
   try {
@@ -446,9 +445,9 @@ class EditorProvider extends ChangeNotifier {
   ///  * a rich-text tab over a plain file (the scrib_rich envelope would
   ///    corrupt the .txt), or a plain-mode tab over a .rtf (a headerless .rtf
   ///    is rejected by Word/WordPad) — same manual-swap rule;
-  ///  * a Delta with image/table embeds targeting a .rtf — RTF conversion
-  ///    drops embeds, so the write is deferred to the manual (confirming)
-  ///    save path.
+  ///  * a Delta with a table or an image RTF cannot hold (SVG) targeting a
+  ///    .rtf: conversion would drop it, so the write is deferred to the
+  ///    manual (confirming) save path.
   ///
   /// Refused tabs stay dirty, so the quit flow's saveAllSaveable backstop
   /// keeps refusing to discard them. Throws on I/O failure.
@@ -532,11 +531,11 @@ class EditorProvider extends ChangeNotifier {
       if (written.mode != EditorMode.richText || written.deltaJson.isEmpty) {
         return null; // plain text into a .rtf produces a headerless file
       }
-      if (deltaHasEmbeds(written.deltaJson)) {
+      final out = RtfService.exportDelta(written.deltaJson);
+      if (out.dropped) {
         return null; // lossy write — needs the manual path's confirmation
       }
-      await _fileService.writeRtfFile(
-          path, RtfService.deltaToRtf(written.deltaJson));
+      await _fileService.writeRtfFile(path, out.rtf);
       await stampDiskState(tab);
       return written;
     }
@@ -603,6 +602,7 @@ class EditorProvider extends ChangeNotifier {
     // the right trade for a control whose whole purpose is to stop holding
     // decrypted content.
     ImageEmbedService.clearDecodeCache();
+    RtfService.clearPictureCache();
     unawaited(_purgeClipboardIfFrom(wasShowing));
     _invalidateActiveText();
     notifyListeners();
@@ -1232,11 +1232,11 @@ class EditorProvider extends ChangeNotifier {
       }
       if (isRich) {
         // Writing the Delta as-is would put the scrib_rich JSON envelope into
-        // the .rtf. Convert, but never drop image/table embeds here: only the
-        // Save As path asks before an RTF write loses them.
-        if (deltaHasEmbeds(written.deltaJson)) return false;
-        await _fileService.writeRtfFile(
-            path, RtfService.deltaToRtf(written.deltaJson));
+        // the .rtf. Convert, but never drop a table or an image RTF cannot
+        // hold here: only the Save As path asks before an RTF write loses one.
+        final out = RtfService.exportDelta(written.deltaJson);
+        if (out.dropped) return false;
+        await _fileService.writeRtfFile(path, out.rtf);
       } else {
         await _fileService.writeTxtFile(path, content);
       }

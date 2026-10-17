@@ -4,6 +4,34 @@ All notable changes to Scrib Desktop are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Images in `.rtf` files.** A rich-text note saved as `.rtf` now keeps its
+  images, so a note with pictures no longer has to be encrypted to keep them.
+  They use the standard RTF picture format that Word, WordPad and LibreOffice
+  read, and Scrib reads them back at the size you set. Suggested by [@BadrPost](https://github.com/BadrPost) in
+  [#25](https://github.com/beeswaxpat/scrib-desktop/issues/25).
+
+  Limitations:
+  - PNG and JPEG images are stored as they are. GIF, WebP and BMP images are
+    converted to PNG, so an animated GIF keeps only its first frame.
+  - Tables and SVG images still cannot be stored in RTF. Scrib asks before a
+    save would remove them, and auto-save leaves such a note unsaved until you
+    choose. Use `.scrb` to keep them.
+  - RTF stores images as text, so an `.rtf` with pictures is about twice the
+    size of the images in it.
+  - Scrib keeps an `.rtf` small enough to reopen (64 MB, which is roughly
+    30 MB of pictures). If a note has more, Scrib asks before leaving the last
+    pictures out of the file.
+  - When opening an `.rtf` from another program, only PNG and JPEG pictures
+    come in. Older picture formats some programs use (WMF, EMF) are skipped,
+    and the text around them still opens. So are pictures over 4 MB or
+    10,000 pixels on a side, and anything past 500 pictures in one file.
+  - Image alignment (left, center, right) and picture cropping set in Word are
+    not kept.
+
 ## [1.10.1] - 2026-10-17 - Quit crash, rich text Save As and lost settings
 
 A bug-fix release. Closing Scrib no longer crashes. Rich text saves under any

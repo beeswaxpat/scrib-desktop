@@ -102,12 +102,11 @@ class FileOperations {
     final isRichWithDelta =
         tab.mode == EditorMode.richText && tab.deltaJson.isNotEmpty;
 
-    // Any Delta→RTF conversion silently drops image/table embeds, whose bytes
-    // live only inside the Delta. Never do that without the user's say-so.
-    Future<bool> rtfWriteAllowed() async {
-      if (!deltaHasEmbeds(tab.deltaJson)) return true;
-      return confirmLossyRtf != null && await confirmLossyRtf();
-    }
+    // Delta→RTF conversion drops tables and images RTF cannot hold (SVG),
+    // whose bytes live only inside the Delta. Never without the user's say-so.
+    // One conversion per save, so what was checked is exactly what is written.
+    Future<String?> rtfToWrite(SavedContent written) =>
+        _rtfToWrite(written, confirmLossyRtf);
 
     // An extension swap writes a path the user never picked, and AtomicWrite
     // replaces the destination outright (MOVEFILE_REPLACE_EXISTING leaves no
@@ -173,9 +172,9 @@ class FileOperations {
           return SaveResult.failure(saveOverwriteDeclined);
         }
         if (newExt == '.rtf' && tab.deltaJson.isNotEmpty) {
-          if (!await rtfWriteAllowed()) return SaveResult.failure('Cancelled');
           final written = tab.snapshotForSave();
-          final rtf = RtfService.deltaToRtf(written.deltaJson);
+          final rtf = await rtfToWrite(written);
+          if (rtf == null) return SaveResult.failure('Cancelled');
           await _fileService.writeRtfFile(newPath, rtf);
           editor.markTabSavedAs(tab, newPath, written);
         } else {
@@ -201,9 +200,9 @@ class FileOperations {
           if (!await overwriteAllowed(newPath)) {
             return SaveResult.failure(saveOverwriteDeclined);
           }
-          if (!await rtfWriteAllowed()) return SaveResult.failure('Cancelled');
           final written = tab.snapshotForSave();
-          final rtf = RtfService.deltaToRtf(written.deltaJson);
+          final rtf = await rtfToWrite(written);
+          if (rtf == null) return SaveResult.failure('Cancelled');
           await _fileService.writeRtfFile(newPath, rtf);
           editor.markTabSavedAs(tab, newPath, written);
           await _deleteOldFile(currentPath, newPath);
@@ -231,9 +230,9 @@ class FileOperations {
 
       // Case D: in-place save. RTF gets Delta→RTF conversion first.
       if (isRtfOnDisk && isRichWithDelta) {
-        if (!await rtfWriteAllowed()) return SaveResult.failure('Cancelled');
         final written = tab.snapshotForSave();
-        final rtf = RtfService.deltaToRtf(written.deltaJson);
+        final rtf = await rtfToWrite(written);
+        if (rtf == null) return SaveResult.failure('Cancelled');
         await _fileService.writeRtfFile(currentPath, rtf);
         editor.markTabSavedAs(tab, currentPath, written);
         return SaveResult.success();
@@ -333,10 +332,14 @@ class FileOperations {
 
     final isRtfWrite =
         isRtf && tab.mode == EditorMode.richText && tab.deltaJson.isNotEmpty;
-    if (isRtfWrite && deltaHasEmbeds(tab.deltaJson)) {
-      // RTF conversion drops image/table embeds — never silently.
-      final proceed = confirmLossyRtf != null && await confirmLossyRtf();
-      if (!proceed) return SaveResult.failure('Cancelled');
+    // Converted once, before the write: a confirm, if needed, is asked about
+    // exactly the file that will be written.
+    SavedContent? rtfWritten;
+    String? rtf;
+    if (isRtfWrite) {
+      rtfWritten = tab.snapshotForSave();
+      rtf = await _rtfToWrite(rtfWritten, confirmLossyRtf);
+      if (rtf == null) return SaveResult.failure('Cancelled');
     }
 
     // The native dialog has no owner window, so Scrib stays clickable while it
@@ -352,11 +355,9 @@ class FileOperations {
     onWillWrite?.call(isEncrypted);
 
     try {
-      if (isRtfWrite) {
-        final written = tab.snapshotForSave();
-        final rtf = RtfService.deltaToRtf(written.deltaJson);
+      if (rtf != null && rtfWritten != null) {
         await _fileService.writeRtfFile(effectivePath, rtf);
-        editor.markTabSavedAs(tab, effectivePath, written);
+        editor.markTabSavedAs(tab, effectivePath, rtfWritten);
       } else {
         final wrote = await editor.saveActiveTabAs(effectivePath,
             encrypted: isEncrypted, password: password);
@@ -371,6 +372,17 @@ class FileOperations {
       if (kDebugMode) debugPrint('Save-as failed: $e');
       return SaveResult.failure(e.toString());
     }
+  }
+
+  /// The RTF for [written], or null when the save should stop: the
+  /// conversion would leave something out (a table, an image RTF cannot hold)
+  /// and [confirmLossyRtf] is missing or the user declined.
+  static Future<String?> _rtfToWrite(SavedContent written,
+      Future<bool> Function()? confirmLossyRtf) async {
+    final out = RtfService.exportDelta(written.deltaJson);
+    if (!out.dropped) return out.rtf;
+    if (confirmLossyRtf == null || !await confirmLossyRtf()) return null;
+    return out.rtf;
   }
 
   /// The path Save As writes when the user picked [picked].

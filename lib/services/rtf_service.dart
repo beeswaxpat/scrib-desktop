@@ -1,13 +1,20 @@
+import 'dart:collection';
 import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:image/image.dart' as img;
+
+import 'file_service.dart';
 import 'format_utils.dart';
+import 'image_embed_service.dart';
 
 /// Converts between Quill Delta JSON and RTF format.
 ///
 /// Supports: bold, italic, underline, strikethrough, sub/superscript,
 /// hyperlinks (as `{\field{\*\fldinst HYPERLINK ...}}` fields), font family,
 /// font size, text color and highlight (via a `\colortbl`), headers, bullet
-/// lists, numbered lists, checklists, and block quotes. Inline formatting is
+/// lists, numbered lists, checklists, block quotes and images (`{\pict}`
+/// groups: PNG and JPEG as they are, GIF/WebP/BMP converted to PNG). Inline formatting is
 /// group-scoped on import (a `}` restores the state that was active at the
 /// matching `{`), unknown `{\*\...}` destination groups are skipped per the
 /// RTF spec, and Scrib's own block markers (bullet/number/checkbox glyphs plus
@@ -16,7 +23,8 @@ import 'format_utils.dart';
 ///
 /// RTF parsing is best-effort. The parser handles the subset of RTF produced
 /// by Word, WordPad, and LibreOffice for simple documents — complex features
-/// (nested tables, images, styles) pass through as stripped text. For a
+/// (tables, styles) pass through as stripped text, and pictures in formats
+/// other than PNG and JPEG (WMF, EMF) are skipped. For a
 /// byte-perfect RTF exchange, use a dedicated library in a future revision.
 ///
 /// All methods are static — RtfService carries no state.
@@ -60,16 +68,27 @@ class RtfService {
   ///
   /// Malformed/garbage Delta never throws: on a parse failure the raw string is
   /// exported as escaped plain text inside a valid RTF wrapper.
-  static String deltaToRtf(String deltaJson) {
-    if (deltaJson.isEmpty) return _wrapRtf('');
+  static String deltaToRtf(String deltaJson) => exportDelta(deltaJson).rtf;
+
+  /// True when [deltaToRtf] would leave something out of [deltaJson]: a table,
+  /// an image RTF cannot hold, or pictures beyond what an .rtf Scrib can
+  /// reopen holds. Save paths should call [exportDelta] once instead and use
+  /// both halves of the result, so the check and the write cannot disagree.
+  static bool dropsEmbeds(String deltaJson) => exportDelta(deltaJson).dropped;
+
+  /// [deltaToRtf] plus whether anything was left out (see [RtfExport]).
+  static RtfExport exportDelta(String deltaJson) {
+    if (deltaJson.isEmpty) return RtfExport(_wrapRtf(''), false);
 
     final List<dynamic> ops;
     try {
       final decoded = jsonDecode(deltaJson);
-      if (decoded is! List) return _wrapRtf('${_escapeRtf(deltaJson)}\\par\n');
+      if (decoded is! List) {
+        return RtfExport(_wrapRtf('${_escapeRtf(deltaJson)}\\par\n'), false);
+      }
       ops = decoded;
     } catch (_) {
-      return _wrapRtf('${_escapeRtf(deltaJson)}\\par\n');
+      return RtfExport(_wrapRtf('${_escapeRtf(deltaJson)}\\par\n'), false);
     }
     final fonts = <String>{'Times New Roman'}; // Default font at index 0
     final colors = <int>[];
@@ -116,96 +135,140 @@ class RtfService {
       colorTable.write('}');
     }
 
+    // Picture pass: every embed op becomes a {\pict} group, or null when RTF
+    // cannot hold it (a table, an SVG, an image that will not decode).
+    var dropped = false;
+    final picts = <int, String>{};
+    for (int k = 0; k < ops.length; k++) {
+      final op = ops[k];
+      if (op is! Map) continue;
+      final insert = op['insert'];
+      if (insert == null || insert is String) continue;
+      final pict = insert is Map ? _pictGroup(insert, _attributesOf(op)) : null;
+      if (pict == null) {
+        dropped = true;
+      } else {
+        picts[k] = pict;
+      }
+    }
+
     // Second pass: group ops into paragraphs.
     // In Quill Delta, block attributes (header, list, blockquote) are on the
     // '\n' op that *ends* the paragraph — not on the text ops before it.
     // We buffer each paragraph's inline content and flush it with the block
     // formatting prepended when we encounter the terminating '\n'.
-    final content = StringBuffer();
-    final paraBuffer = StringBuffer();
-    bool paraHasContent = false;
-    // Consecutive ordered-list paragraphs share a counter so the exported
-    // numbers read 1. 2. 3.; any other paragraph type restarts it.
-    int orderedNumber = 0;
+    String build(Map<int, String> kept) {
+      final content = StringBuffer();
+      final paraBuffer = StringBuffer();
+      bool paraHasContent = false;
+      // Consecutive ordered-list paragraphs share a counter so the exported
+      // numbers read 1. 2. 3.; any other paragraph type restarts it.
+      int orderedNumber = 0;
 
-    void flushParagraph(Map<String, dynamic> blockAttrs) {
-      if (blockAttrs['list'] == 'ordered') {
-        orderedNumber++;
-      } else {
-        orderedNumber = 0;
+      void flushParagraph(Map<String, dynamic> blockAttrs) {
+        if (blockAttrs['list'] == 'ordered') {
+          orderedNumber++;
+        } else {
+          orderedNumber = 0;
+        }
+        final open = _blockFormattingOpen(blockAttrs, orderedNumber);
+        content.write(open);
+        content.write(paraBuffer.toString());
+        // The close mirrors the open exactly. A separate close that fired on
+        // the mere presence of a key emitted a lone '}' for an out-of-range
+        // header level or a blockquote value that was not literally true,
+        // which closed the document group early: Word and WordPad stopped
+        // reading there and treated the rest of the note as trailing garbage.
+        if (open.isNotEmpty) content.write('}');
+        content.write('\\par\n');
+        paraBuffer.clear();
+        paraHasContent = false;
       }
-      final open = _blockFormattingOpen(blockAttrs, orderedNumber);
-      content.write(open);
-      content.write(paraBuffer.toString());
-      // The close mirrors the open exactly. A separate close that fired on the
-      // mere presence of a key emitted a lone '}' for an out-of-range header
-      // level or a blockquote value that was not literally true, which closed
-      // the document group early: Word and WordPad stopped reading there and
-      // treated the rest of the note as trailing garbage.
-      if (open.isNotEmpty) content.write('}');
-      content.write('\\par\n');
-      paraBuffer.clear();
-      paraHasContent = false;
-    }
 
-    for (final op in ops) {
-      if (op is! Map || !op.containsKey('insert')) continue;
+      for (int k = 0; k < ops.length; k++) {
+        final op = ops[k];
+        if (op is! Map || !op.containsKey('insert')) continue;
 
-      final insert = op['insert'];
-      if (insert is! String) continue;
-
-      final attrs = _attributesOf(op);
-
-      if (insert == '\n') {
-        // End of paragraph — emit buffered content with block formatting first
-        flushParagraph(attrs);
-      } else {
-        // Split by embedded newlines (plain newlines inside a text run become
-        // separate unstyled paragraphs)
-        final lines = insert.split('\n');
-        final rawLink = attrs['link'];
-        // The allowlist applies on the way OUT as well as on the way in: a
-        // note that picked up a file://, UNC or javascript: link by paste or
-        // by import must not become a Word document carrying a live field that
-        // resolves it. The text and its other formatting still export.
-        final link =
-            rawLink is String && isSafeLaunchUrl(rawLink) ? rawLink : null;
-        // The link itself rides in the field instruction; the visible run
-        // keeps its other inline formatting inside \fldrslt.
-        final inlineAttrs = rawLink is String
-            ? (Map<String, dynamic>.from(attrs)..remove('link'))
-            : attrs;
-        for (int j = 0; j < lines.length; j++) {
-          if (lines[j].isNotEmpty) {
-            if (link != null) {
-              paraBuffer.write(
-                  '{\\field{\\*\\fldinst{HYPERLINK "${_escapeFieldUrl(link)}"}}{\\fldrslt ');
-            }
-            final open = _inlineFormatting(inlineAttrs, fontList, colors);
-            paraBuffer.write(open);
-            paraBuffer.write(_escapeRtf(lines[j]));
-            if (open.isNotEmpty) paraBuffer.write('}');
-            if (link != null) {
-              paraBuffer.write('}}');
-            }
+        final insert = op['insert'];
+        if (insert is Map) {
+          final pict = kept[k];
+          if (pict != null) {
+            paraBuffer.write(pict);
             paraHasContent = true;
           }
-          if (j < lines.length - 1) {
-            // Embedded newline = paragraph break with no block attributes
-            flushParagraph({});
+          continue;
+        }
+        if (insert is! String) continue;
+
+        final attrs = _attributesOf(op);
+
+        if (insert == '\n') {
+          // End of paragraph: emit buffered content with block formatting first
+          flushParagraph(attrs);
+        } else {
+          // Split by embedded newlines (plain newlines inside a text run become
+          // separate unstyled paragraphs)
+          final lines = insert.split('\n');
+          final rawLink = attrs['link'];
+          // The allowlist applies on the way OUT as well as on the way in: a
+          // note that picked up a file://, UNC or javascript: link by paste or
+          // by import must not become a Word document carrying a live field
+          // that resolves it. The text and its other formatting still export.
+          final link =
+              rawLink is String && isSafeLaunchUrl(rawLink) ? rawLink : null;
+          // The link itself rides in the field instruction; the visible run
+          // keeps its other inline formatting inside \fldrslt.
+          final inlineAttrs = rawLink is String
+              ? (Map<String, dynamic>.from(attrs)..remove('link'))
+              : attrs;
+          for (int j = 0; j < lines.length; j++) {
+            if (lines[j].isNotEmpty) {
+              if (link != null) {
+                paraBuffer.write(
+                    '{\\field{\\*\\fldinst{HYPERLINK "${_escapeFieldUrl(link)}"}}{\\fldrslt ');
+              }
+              final open = _inlineFormatting(inlineAttrs, fontList, colors);
+              paraBuffer.write(open);
+              paraBuffer.write(_escapeRtf(lines[j]));
+              if (open.isNotEmpty) paraBuffer.write('}');
+              if (link != null) {
+                paraBuffer.write('}}');
+              }
+              paraHasContent = true;
+            }
+            if (j < lines.length - 1) {
+              // Embedded newline = paragraph break with no block attributes
+              flushParagraph({});
+            }
           }
         }
       }
+
+      // Flush any trailing content that wasn't terminated by a '\n' op
+      if (paraHasContent) {
+        content.write(paraBuffer.toString());
+        content.write('\\par\n');
+      }
+
+      return _wrapRtf(content.toString(),
+          fontTable: fontTable.toString(), colorTable: colorTable.toString());
     }
 
-    // Flush any trailing content that wasn't terminated by a '\n' op
-    if (paraHasContent) {
-      content.write(paraBuffer.toString());
-      content.write('\\par\n');
+    var rtf = build(picts);
+    // Hex doubles every picture, and Scrib refuses to open a file over
+    // FileService.maxReadBytes. Leave out the last pictures until the file is
+    // one Scrib can reopen, and report it like any other dropped embed.
+    if (rtf.length > FileService.maxReadBytes && picts.isNotEmpty) {
+      var excess = rtf.length - FileService.maxReadBytes;
+      final kept = Map<int, String>.of(picts);
+      for (final k in picts.keys.toList().reversed) {
+        if (excess <= 0) break;
+        excess -= kept.remove(k)!.length;
+      }
+      dropped = true;
+      rtf = build(kept);
     }
-
-    return _wrapRtf(content.toString(),
-        fontTable: fontTable.toString(), colorTable: colorTable.toString());
+    return RtfExport(rtf, dropped);
   }
 
   /// Parse RTF string to Quill Delta JSON string.
@@ -222,6 +285,7 @@ class RtfService {
     }
 
     final ops = <Map<String, dynamic>>[];
+    _importedPictures = 0;
     final fonts = _parseFontTable(rtfContent);
     final colors = _parseColorTable(rtfContent);
 
@@ -231,12 +295,13 @@ class RtfService {
     // satisfies, so a file with no font table lost its entire first body
     // group, and a leading \'93 smart quote was decapitated into literal text.
     // The pre-pass was never load-bearing: _parseRtfContent already skips
-    // \fonttbl, \colortbl, \stylesheet, \info and \pict groups by name, and
+    // \fonttbl, \colortbl, \stylesheet and \info groups by name, and
     // the outer group's braces simply pair up on the inline-state stack.
     _parseRtfContent(rtfContent, ops, fonts, colors, _RtfInlineState(), 0);
 
     // Ensure document ends with newline
-    if (ops.isEmpty || !(ops.last['insert'] as String).endsWith('\n')) {
+    final last = ops.isEmpty ? null : ops.last['insert'];
+    if (last is! String || !last.endsWith('\n')) {
       ops.add({'insert': '\n'});
     }
 
@@ -494,15 +559,30 @@ class RtfService {
           // ...): the spec requires readers that don't understand it to skip
           // the whole group, otherwise its payload leaks into the note text.
           if (i + 1 < content.length && content[i + 1] == '*') {
-            i = _skipGroup(content, i);
+            // Word wraps each picture as {\*\shppict{\pict ...}}: read the
+            // pictures in that one, skip every other ignorable destination.
+            final dest = _groupCtrlPattern.matchAsPrefix(content, i + 2);
+            if (dest != null && dest.group(1) == 'shppict') {
+              flushText();
+              i = _parseShppict(content, i, ops, state.link);
+            } else {
+              i = _skipGroup(content, i);
+            }
             continue;
           }
           final ctrlMatch = _groupCtrlPattern.matchAsPrefix(content, i);
           final ctrl = ctrlMatch?.group(1) ?? '';
+          // \nonshppict holds Word's fallback copy of the picture inside
+          // \shppict (usually a WMF); reading it too would duplicate the image.
           if (ctrl == 'fonttbl' || ctrl == 'colortbl' || ctrl == 'stylesheet' ||
-              ctrl == 'info' || ctrl == 'pict') {
+              ctrl == 'info' || ctrl == 'nonshppict') {
             // Skip entire group
             i = _skipGroup(content, i);
+            continue;
+          }
+          if (ctrl == 'pict') {
+            flushText();
+            i = _parsePict(content, i, ops, state.link);
             continue;
           }
           if (ctrl == 'field') {
@@ -1025,6 +1105,336 @@ class RtfService {
         '}';
   }
 
+  // ── Images ────────────────────────────────────────────────────────────────
+  //
+  // RTF carries a picture inline as hex inside a {\pict ...} group. PNG and
+  // JPEG go in unchanged (\pngblip, \jpegblip), which Word, WordPad and
+  // LibreOffice read. The type comes from the image's own bytes, not the MIME
+  // its data URI declares (a JPEG saved as .png is still a JPEG). Any other
+  // image the `image` package can decode (GIF, WebP, BMP, ...) is converted
+  // to a still PNG; an animation keeps its first frame. Anything else (SVG, a
+  // table, an image that will not decode) cannot be written, and exportDelta
+  // reports it so the save paths ask before losing it.
+
+  /// Twips per logical pixel at 96 DPI.
+  static const int _twipsPerPixel = 15;
+
+  /// Largest \picwgoal/\pichgoal: older readers parse these as signed 16-bit.
+  static const int _maxGoalTwips = 32767;
+
+  /// Width the editor shows an image at when it carries no stored width.
+  static const double _unsizedImageWidth = 420;
+
+  /// Bytes of picture data per hex line inside a {\pict} group.
+  static const int _hexLineBytes = 64;
+
+  /// Pixel ceilings for a picture read from or written to RTF. A small file
+  /// can declare a huge canvas, and .rtf tabs come back from the session on
+  /// every launch, so an image the display path would choke on is refused
+  /// rather than reopened forever.
+  static const int _maxPictureSide = 10000;
+  static const int _maxPicturePixels = 25000000;
+
+  /// Pictures taken from one .rtf on open; the rest are skipped.
+  static const int _maxImportedPictures = 500;
+  static int _importedPictures = 0;
+
+  /// Converted pictures (the expensive GIF/WebP/BMP decodes), keyed by data
+  /// URI so a periodic auto-save does not redo them. Null records an image
+  /// that cannot be written. Bounded by bytes, keys included, and cleared on
+  /// lock along with the editor's own image cache.
+  static final LinkedHashMap<String, _RtfPicture?> _conversionCache =
+      LinkedHashMap();
+  static const int _conversionCacheBytes = 16 * 1024 * 1024;
+  static int _conversionCacheUsed = 0;
+
+  /// Drop every cached conversion. Called when a tab locks: the cache can hold
+  /// a decrypted note's pictures if that note was being saved as RTF.
+  static void clearPictureCache() {
+    _conversionCache.clear();
+    _conversionCacheUsed = 0;
+  }
+
+  static int _cacheCost(String key, _RtfPicture? value) =>
+      key.length + (value?.bytes.length ?? 0);
+
+  /// The picture RTF can carry for an image embed's data URI, or null.
+  static _RtfPicture? _pictureFor(String source) {
+    final decoded = ImageEmbedService.decodeDataUri(source);
+    if (decoded == null) return null;
+    final direct = _passThroughPicture(decoded.bytes);
+    if (direct != null) return direct;
+
+    if (_conversionCache.containsKey(source)) {
+      final hit = _conversionCache.remove(source);
+      _conversionCache[source] = hit; // re-insert: most recently used
+      return hit;
+    }
+    final converted = _convertedPicture(decoded.bytes);
+    final cost = _cacheCost(source, converted);
+    if (cost <= _conversionCacheBytes) {
+      _conversionCache[source] = converted;
+      _conversionCacheUsed += cost;
+      while (_conversionCacheUsed > _conversionCacheBytes) {
+        final oldest = _conversionCache.keys.first;
+        _conversionCacheUsed -= _cacheCost(oldest, _conversionCache.remove(oldest));
+      }
+    }
+    return converted;
+  }
+
+  /// PNG or JPEG bytes that can go into RTF unchanged, identified by their
+  /// magic bytes and a readable header with a sane size. Null otherwise.
+  static _RtfPicture? _passThroughPicture(Uint8List bytes) {
+    try {
+      if (_isPng(bytes)) {
+        // Width and height straight from IHDR: a strict decoder rejects files
+        // the editor still shows (a missing IEND, for one).
+        if (bytes.length < 24 ||
+            String.fromCharCodes(bytes, 12, 16) != 'IHDR') {
+          return null;
+        }
+        final data = ByteData.sublistView(bytes);
+        final w = data.getUint32(16);
+        final h = data.getUint32(20);
+        if (!_sizeAllowed(w, h)) return null;
+        return _RtfPicture('pngblip', bytes, w, h);
+      }
+      if (_isJpeg(bytes)) {
+        final info = img.JpegDecoder().startDecode(bytes);
+        if (info == null || !_sizeAllowed(info.width, info.height)) {
+          return null;
+        }
+        return _RtfPicture('jpegblip', bytes, info.width, info.height);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Any other decodable image as a still PNG within the editor's size
+  /// ceiling, or null. No lossy JPEG fallback: a PNG too large to keep is
+  /// reported as dropped rather than quietly flattened.
+  static _RtfPicture? _convertedPicture(Uint8List bytes) {
+    try {
+      final image = img.decodeImage(bytes);
+      if (image == null || !_sizeAllowed(image.width, image.height)) {
+        return null;
+      }
+      final png = img.encodePng(image, singleFrame: true);
+      if (png.length > ImageEmbedService.maxEmbedBytes) return null;
+      return _RtfPicture('pngblip', png, image.width, image.height);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static bool _sizeAllowed(int w, int h) =>
+      w > 0 &&
+      h > 0 &&
+      w <= _maxPictureSide &&
+      h <= _maxPictureSide &&
+      w * h <= _maxPicturePixels;
+
+  static bool _isPng(Uint8List b) =>
+      b.length > 8 &&
+      b[0] == 0x89 &&
+      b[1] == 0x50 &&
+      b[2] == 0x4E &&
+      b[3] == 0x47;
+
+  static bool _isJpeg(Uint8List b) =>
+      b.length > 3 && b[0] == 0xFF && b[1] == 0xD8;
+
+  /// The `{\pict ...}` group for an image embed, or null when it cannot be
+  /// written. The display size goes in \picwgoal/\pichgoal (twips), taken
+  /// from the width the user set in the editor, so it survives a round trip.
+  /// A link on the image is kept as a HYPERLINK field around the picture.
+  static String? _pictGroup(Map insert, Map<String, dynamic> attrs) {
+    final source = insert['image'];
+    if (source is! String) return null;
+    final picture = _pictureFor(source);
+    if (picture == null) return null;
+    final style = attrs['style'];
+    final width =
+        ImageEmbedService.storedWidth(style is String ? style : null) ??
+            (picture.width < _unsizedImageWidth
+                ? picture.width.toDouble()
+                : _unsizedImageWidth);
+    var goalW = width * _twipsPerPixel;
+    var goalH = goalW * picture.height / picture.width;
+    final longest = goalW > goalH ? goalW : goalH;
+    if (longest > _maxGoalTwips) {
+      goalW = goalW * _maxGoalTwips / longest;
+      goalH = goalH * _maxGoalTwips / longest;
+    }
+    final pict = StringBuffer()
+      ..write('{\\pict\\${picture.blip}')
+      ..write('\\picw${picture.width}\\pich${picture.height}')
+      ..write('\\picwgoal${goalW.round()}\\pichgoal${goalH.round()}\n')
+      ..write(_hexLines(picture.bytes))
+      ..write('}');
+    final rawLink = attrs['link'];
+    if (rawLink is String && isSafeLaunchUrl(rawLink)) {
+      return '{\\field{\\*\\fldinst{HYPERLINK "${_escapeFieldUrl(rawLink)}"}}'
+          '{\\fldrslt $pict}}';
+    }
+    return pict.toString();
+  }
+
+  /// [bytes] as lower-case hex, [_hexLineBytes] bytes per line.
+  static String _hexLines(Uint8List bytes) {
+    const digits = '0123456789abcdef';
+    final lines = (bytes.length + _hexLineBytes - 1) ~/ _hexLineBytes;
+    final out = Uint8List(bytes.length * 2 + lines);
+    var o = 0;
+    for (var i = 0; i < bytes.length; i++) {
+      final b = bytes[i];
+      out[o++] = digits.codeUnitAt(b >> 4);
+      out[o++] = digits.codeUnitAt(b & 0x0F);
+      if ((i + 1) % _hexLineBytes == 0 || i == bytes.length - 1) {
+        out[o++] = 0x0A;
+      }
+    }
+    return latin1.decode(Uint8List.sublistView(out, 0, o));
+  }
+
+  /// Read the `{\pict}` children of a Word `{\*\shppict ...}` group. [i]
+  /// points just inside the group; returns the index past it. Nothing else in
+  /// the group reaches the note.
+  static int _parseShppict(String content, int i,
+      List<Map<String, dynamic>> ops, String? link) {
+    final end = _skipGroup(content, i);
+    final stop = end > i ? end - 1 : i;
+    var p = i;
+    while (p < stop) {
+      final c = content.codeUnitAt(p);
+      if (c == 0x7B) {
+        final m = _groupCtrlPattern.matchAsPrefix(content, p + 1);
+        if (m != null && m.group(1) == 'pict') {
+          p = _parsePict(content, p + 1, ops, link);
+        } else {
+          p = _skipGroup(content, p + 1);
+        }
+        continue;
+      }
+      p += c == 0x5C ? 2 : 1;
+    }
+    return end;
+  }
+
+  /// Read a `{\pict ...}` group into an image embed op. [i] points at the
+  /// `\pict` word just inside the group; returns the index past the group.
+  ///
+  /// Only PNG and JPEG are taken, and only what export would write back: the
+  /// same header and size checks, the editor's 4 MB ceiling and at most
+  /// [_maxImportedPictures] per file. Other picture types (WMF, EMF, DIB)
+  /// and \bin binary payloads are skipped whole, so their data never leaks
+  /// into the note as text.
+  static int _parsePict(String content, int i,
+      List<Map<String, dynamic>> ops, String? link) {
+    final end = _skipGroup(content, i);
+    if (_importedPictures >= _maxImportedPictures) return end;
+    String? blip;
+    int? goalWidth;
+    int scaleX = 100;
+    final bytes = BytesBuilder(copy: false);
+    final chunk = Uint8List(4096);
+    var chunkLen = 0;
+    int? highNibble;
+    var tooLarge = false;
+    var p = i;
+    final stop = end > i ? end - 1 : i; // index of the closing brace
+    while (p < stop) {
+      final c = content.codeUnitAt(p);
+      if (c == 0x7B) {
+        // Nested group ({\*\blipuid ...}, {\*\picprop ...}): not image data.
+        p = _skipGroup(content, p + 1);
+        continue;
+      }
+      if (c == 0x5C) {
+        if (p + 1 < stop && content.codeUnitAt(p + 1) == 0x27) {
+          p += 4; // \'XX is an escaped character, not picture data
+          continue;
+        }
+        final m = _ctrlWordPattern.matchAsPrefix(content, p);
+        if (m == null) {
+          p += 2;
+          continue;
+        }
+        final value = int.tryParse(m.group(2) ?? '');
+        switch (m.group(1)) {
+          case 'pngblip':
+            blip = 'pngblip';
+            break;
+          case 'jpegblip':
+            blip = 'jpegblip';
+            break;
+          case 'picwgoal':
+            goalWidth = value;
+            break;
+          case 'picscalex':
+            if (value != null && value > 0 && value <= 1000) scaleX = value;
+            break;
+          case 'bin':
+            return end; // raw binary payload: not supported, skip the picture
+        }
+        p = m.end;
+        continue;
+      }
+      final nibble = _hexValue(c);
+      if (nibble >= 0 && !tooLarge) {
+        if (highNibble == null) {
+          highNibble = nibble;
+        } else {
+          chunk[chunkLen++] = (highNibble << 4) | nibble;
+          highNibble = null;
+          if (chunkLen == chunk.length) {
+            bytes.add(Uint8List.fromList(chunk));
+            chunkLen = 0;
+            if (bytes.length > ImageEmbedService.maxEmbedBytes) {
+              tooLarge = true;
+            }
+          }
+        }
+      }
+      p++;
+    }
+    if (blip == null || tooLarge) return end;
+    if (chunkLen > 0) bytes.add(Uint8List.sublistView(chunk, 0, chunkLen));
+    final data = bytes.takeBytes();
+    if (data.isEmpty || data.length > ImageEmbedService.maxEmbedBytes) {
+      return end;
+    }
+    final picture = _passThroughPicture(data);
+    if (picture == null || picture.blip != blip) return end;
+
+    final mime = blip == 'pngblip' ? 'image/png' : 'image/jpeg';
+    final op = <String, dynamic>{
+      'insert': {'image': 'data:$mime;base64,${base64Encode(data)}'},
+    };
+    final attributes = <String, dynamic>{};
+    // Below the editor's minimum the image is left unsized, so it shows at
+    // its natural size instead of being stretched to that minimum.
+    final px =
+        goalWidth == null ? 0.0 : goalWidth * scaleX / 100 / _twipsPerPixel;
+    if (px >= ImageEmbedService.minDisplayWidth) {
+      final width = ImageEmbedService.storedWidth('width: ${px}px;');
+      if (width != null) attributes['style'] = 'width: ${width.round()}px;';
+    }
+    if (link != null) attributes['link'] = link;
+    if (attributes.isNotEmpty) op['attributes'] = attributes;
+    ops.add(op);
+    _importedPictures++;
+    return end;
+  }
+
+  static int _hexValue(int c) {
+    if (c >= 0x30 && c <= 0x39) return c - 0x30;
+    if (c >= 0x61 && c <= 0x66) return c - 0x57;
+    if (c >= 0x41 && c <= 0x46) return c - 0x37;
+    return -1;
+  }
+
   /// Escape a URL for embedding inside a quoted HYPERLINK field instruction.
   /// A double quote would terminate the quoted string, so it is
   /// percent-encoded before the normal RTF escaping.
@@ -1059,6 +1469,28 @@ class RtfService {
     }
     return buf.toString();
   }
+}
+
+/// What [RtfService.exportDelta] produced: the RTF text, and whether anything
+/// in the note was left out of it (a table, an image RTF cannot hold, or
+/// pictures past the size an .rtf Scrib can reopen). A save path writes [rtf]
+/// only when [dropped] is false or the user agreed to lose those parts.
+class RtfExport {
+  final String rtf;
+  final bool dropped;
+
+  const RtfExport(this.rtf, this.dropped);
+}
+
+/// An image ready to write as a `{\pict}` group: the blip type, the bytes
+/// and the pixel size.
+class _RtfPicture {
+  final String blip; // 'pngblip' | 'jpegblip'
+  final Uint8List bytes;
+  final int width;
+  final int height;
+
+  const _RtfPicture(this.blip, this.bytes, this.width, this.height);
 }
 
 /// Mutable inline character formatting during an RTF parse. An instance is

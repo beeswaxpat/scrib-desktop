@@ -918,16 +918,16 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  /// Confirmation shown before any Delta-to-RTF write that would drop image
-  /// or table embeds (RTF cannot represent them).
+  /// Confirmation shown before any Delta-to-RTF write that would drop a
+  /// table or an image RTF cannot hold (RtfService.dropsEmbeds).
   Future<bool> _confirmLossyRtfSave(BuildContext context) {
     if (!context.mounted) return Future.value(false);
     return showScribConfirm(
       context,
-      title: 'Remove Images and Tables?',
-      message: 'RTF files cannot store images or tables. Saving as RTF will '
-          'remove them from this note. To keep them, cancel and use Save As '
-          'with the .scrb format.',
+      title: 'Remove Content RTF Cannot Store?',
+      message: 'This note has tables, SVG images or other images an RTF file '
+          'cannot store. Saving as RTF will remove them from the file. To keep '
+          'them, cancel and use Save As with the .scrb format.',
       confirmLabel: 'Save Anyway',
     );
   }

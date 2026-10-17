@@ -96,9 +96,14 @@ through `AtomicWrite` rather than writing files directly.
 4. **Extension-mode matching in save routing.** A rich-text Delta must not be
    written verbatim into a `.txt` (the scrib_rich JSON envelope would corrupt
    it) and a plain-mode tab must not be written into a `.rtf` (a headerless
-   file is rejected by Word/WordPad). A Delta that carries image or table
-   embeds is never converted to RTF without explicit confirmation, because RTF
-   conversion drops embeds; auto-save defers such writes.
+   file is rejected by Word/WordPad). Images are written into RTF as
+   `{\pict}` groups (PNG and JPEG as they are, GIF/WebP/BMP converted to
+   PNG). A Delta carrying anything RTF cannot hold (a table, an SVG, an image
+   that will not decode, or pictures past the 64 MB read cap) is never
+   written without explicit confirmation; auto-save defers such writes. Every
+   RTF save converts once through `RtfService.exportDelta`, whose `dropped`
+   flag says whether anything was left out, so the check and the bytes written
+   cannot disagree.
 
 5. **flutter_quill stays pinned at 11.5.0.** Embed mechanics (custom block
    embeds carrying JSON strings, `unknownEmbedBuilder`, the shortcut-collision
