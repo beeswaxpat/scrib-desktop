@@ -4,7 +4,11 @@ All notable changes to Scrib Desktop are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.10.1] - 2026-10-17 - Quit crash, rich text Save As and lost settings
+
+A bug-fix release. Closing Scrib no longer crashes. Rich text saves under any
+file name. Settings lost in the 1.10.0 upgrade come back. The `.scrb` file
+format is unchanged. Updating is recommended.
 
 ### Fixed
 
