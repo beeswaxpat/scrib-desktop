@@ -1,6 +1,4 @@
 import 'dart:io';
-import 'dart:typed_data';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
 import 'package:scrib_desktop/providers/editor_provider.dart';
@@ -11,23 +9,20 @@ import 'package:scrib_desktop/services/settings_service.dart';
 
 /// Stands in for the native Save dialog: returns whatever name the "user"
 /// typed. The real Windows dialog appends no extension of its own.
-class _FakeSavePicker extends FilePicker {
+class _FakeSavePicker {
   String? next;
 
-  /// Runs while the "dialog" is open, standing in for clicks on the Scrib
-  /// window (the real dialog has no owner, so the window stays usable).
+  /// Runs while the "dialog" is open, standing in for anything that changes
+  /// the tabs before the user confirms.
   void Function()? whileOpen;
 
-  @override
-  Future<String?> saveFile({
-    String? dialogTitle,
-    String? fileName,
-    String? initialDirectory,
-    FileType type = FileType.any,
-    List<String>? allowedExtensions,
-    Uint8List? bytes,
-    bool lockParentWindow = false,
-  }) async {
+  /// What the last "dialog" was offered.
+  String? suggestedName;
+  String? initialDirectory;
+
+  Future<String?> pick(String suggestedName, String? initialDirectory) async {
+    this.suggestedName = suggestedName;
+    this.initialDirectory = initialDirectory;
     whileOpen?.call();
     return next;
   }
@@ -96,9 +91,8 @@ void main() {
       await settings.initForTests(tmp.path);
       fs = FileService();
       editor = EditorProvider(fs, settings);
-      ops = FileOperations(fs, settings);
       picker = _FakeSavePicker();
-      FilePicker.platform = picker;
+      ops = FileOperations(fs, settings, pickSaveLocation: picker.pick);
     });
 
     tearDown(() async {
@@ -161,6 +155,23 @@ void main() {
       expect(reopened.activeTab!.mode, EditorMode.richText);
       expect(reopened.activeTab!.deltaJson, contains('Round trip'));
       expect(reopened.activeTab!.deltaJson, contains('header'));
+    });
+
+    test('the dialog suggests the tab format and its folder, and writes nothing',
+        () async {
+      await fs.writeTxtFile(path('Draft.txt'), 'draft');
+      await editor.openFile(path('Draft.txt'));
+      makeRich('now rich');
+      picker.next = null;
+
+      final r = await ops.saveAs(editor, resolvePassword: () async => null);
+
+      expect(picker.suggestedName, 'Draft.rtf');
+      expect(picker.initialDirectory, tmp.path);
+      expect(r.ok, isFalse);
+      expect(r.error, 'Cancelled');
+      expect(await fs.readTxtFile(path('Draft.txt')), 'draft');
+      expect(await File(path('Draft.rtf')).exists(), isFalse);
     });
 
     test('plain note with no extension gets .txt', () async {

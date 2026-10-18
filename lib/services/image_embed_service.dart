@@ -1,7 +1,7 @@
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
-import 'package:file_picker/file_picker.dart';
+import 'package:file_selector/file_selector.dart' show XTypeGroup, openFile;
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 
@@ -63,21 +63,20 @@ class ImageEmbedService {
   /// null if the user cancelled. Throws [ImageEmbedException] on a format that
   /// cannot be decoded or an image that stays too large after downscaling.
   static Future<String?> pickImageDataUri() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: pickerExtensions,
-      dialogTitle: 'Insert Image',
-      withData: true,
+    final file = await openFile(
+      acceptedTypeGroups: const [
+        XTypeGroup(label: 'Images', extensions: pickerExtensions),
+      ],
+      confirmButtonText: 'Insert',
     );
-    if (result == null || result.files.isEmpty) return null;
+    if (file == null) return null;
 
-    final file = result.files.first;
-    final ext = (file.extension ?? '').toLowerCase();
-    Uint8List? bytes = file.bytes;
-    if (bytes == null && file.path != null) {
-      bytes = await File(file.path!).readAsBytes();
-    }
-    if (bytes == null) {
+    final dot = file.name.lastIndexOf('.');
+    final ext = dot < 0 ? '' : file.name.substring(dot + 1).toLowerCase();
+    final Uint8List bytes;
+    try {
+      bytes = await file.readAsBytes();
+    } on FileSystemException {
       throw ImageEmbedException('Could not read the selected file.');
     }
     return buildDataUri(bytes, ext);

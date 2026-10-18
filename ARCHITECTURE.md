@@ -199,6 +199,14 @@ own, so a typed name such as "Meeting notes" arrives bare. `saveAs` re-asks when
 it retargets the picker's path, because the native replace prompt applied to a
 path that is no longer the destination.
 
+The Save As dialog (`file_selector`'s `getSaveLocation`, the Windows
+IFileSaveDialog) only returns a path. It must never write the file: every
+refusal above happens after the dialog closes, so a dialog that wrote first
+would already have replaced the file the user picked. That ruled out
+`file_picker` 12 and later, whose `saveFile` writes the bytes it is given to
+the chosen path itself. Tests replace the dialog through the
+`pickSaveLocation` argument of `FileOperations`.
+
 ```
 User action                     Route                              Refusal behavior
 -----------------------------   --------------------------------   -----------------

@@ -19,7 +19,10 @@ dependencies:
 
   # File system
   path_provider: ^2.1.6
-  file_picker: ^8.1.6
+  # Open, Save As, Insert Image and folder dialogs. The Flutter team's plugin:
+  # its Save dialog only returns a path and never writes the file, so every
+  # write still goes through FileOperations and AtomicWrite.
+  file_selector: ^1.1.0
 
   # FFI â€” used for Windows atomic file replace (MoveFileExW)
   ffi: ^2.1.0

@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `flutter_quill`, moves from 11.5.0 to 11.6.0, because 11.5.0 does not build
   on Flutter 3.44 or later. `url_launcher`, which opens note links, moves to
   6.3.3.
+- **Open, Save As, Insert Image and the default save folder use Flutter's
+  `file_selector` dialogs** (was `file_picker` 8). They are the same Windows
+  dialogs, and they now stay in front of the Scrib window until you close
+  them, as in other Windows apps. Save As only gets the chosen path back, so
+  Scrib still writes the note itself after all of its checks. `file_picker` 12 and later write the
+  file from inside the Save dialog, which could replace a file before Scrib
+  refused the save, so Scrib does not move to them.
 
 ## [1.10.2] - 2026-10-17 - Images in .rtf files
 

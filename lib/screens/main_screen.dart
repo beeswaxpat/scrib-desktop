@@ -4,7 +4,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart'
     show Attribute, ChangeSource, QuillController;
 import 'package:provider/provider.dart';
-import 'package:file_picker/file_picker.dart';
+import 'package:file_selector/file_selector.dart'
+    show XTypeGroup, getDirectoryPath, openFiles;
 import 'package:desktop_drop/desktop_drop.dart';
 import '../dialogs/about_dialog.dart';
 import '../dialogs/calculator_dialog.dart';
@@ -729,14 +730,12 @@ class _MainScreenState extends State<MainScreen> {
   // ── File operations ──────────────────────────────────────────────────────
 
   Future<void> _openFileDialog(BuildContext context) async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: kOpenableExtensions,
-      allowMultiple: true,
-    );
-    if (result == null || !context.mounted) return;
-    for (final file in result.files) {
-      if (file.path != null) await _openFilePath(context, file.path!);
+    final files = await openFiles(acceptedTypeGroups: const [
+      XTypeGroup(label: 'Notes', extensions: kOpenableExtensions),
+    ]);
+    if (files.isEmpty || !context.mounted) return;
+    for (final file in files) {
+      await _openFilePath(context, file.path);
     }
   }
 
@@ -1172,8 +1171,7 @@ class _MainScreenState extends State<MainScreen> {
 
   Future<void> _showSaveLocationPicker(BuildContext context) async {
     final settings = context.read<SettingsService>();
-    final path = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: 'Choose Default Save Location',
+    final path = await getDirectoryPath(
       initialDirectory: settings.defaultSaveLocation.isNotEmpty
           ? settings.defaultSaveLocation
           : null,

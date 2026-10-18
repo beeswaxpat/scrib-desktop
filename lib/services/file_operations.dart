@@ -1,5 +1,6 @@
 import 'dart:io';
-import 'package:file_picker/file_picker.dart';
+import 'package:file_selector/file_selector.dart'
+    show XTypeGroup, getSaveLocation;
 import 'package:flutter/foundation.dart';
 import '../providers/editor_provider.dart';
 import 'atomic_write.dart' show AtomicWrite, canonicalPath;
@@ -59,13 +60,39 @@ class SaveResult {
       SaveResult(ok: false, error: error);
 }
 
+/// Shows the Save As dialog and returns the path the user chose, or null when
+/// they cancelled. It only picks a path: nothing is written until [saveAs]
+/// has run its checks.
+typedef SaveLocationPicker = Future<String?> Function(
+    String suggestedName, String? initialDirectory);
+
 /// Coordinates open/save/save-as across plain text, rich text (RTF), and
 /// encrypted (.scrb) formats. Stateless — all state lives on the tab.
 class FileOperations {
   final FileService _fileService;
   final SettingsService _settings;
+  final SaveLocationPicker _pickSaveLocation;
 
-  FileOperations(this._fileService, this._settings);
+  /// [pickSaveLocation] replaces the native Save As dialog in tests.
+  FileOperations(this._fileService, this._settings,
+      {SaveLocationPicker? pickSaveLocation})
+      : _pickSaveLocation = pickSaveLocation ?? _showSaveDialog;
+
+  /// The Windows Save dialog (IFileSaveDialog through file_selector). It
+  /// returns a path and never writes the file. It asks before replacing an
+  /// existing file and appends no extension to a bare name, which is why
+  /// [saveAsTarget] picks one.
+  static Future<String?> _showSaveDialog(
+      String suggestedName, String? initialDirectory) async {
+    final location = await getSaveLocation(
+      acceptedTypeGroups: const [
+        XTypeGroup(label: 'Notes', extensions: ['txt', 'scrb', 'rtf']),
+      ],
+      initialDirectory: initialDirectory,
+      suggestedName: suggestedName,
+    );
+    return location?.path;
+  }
 
   /// Save the active tab to its existing path. The caller is responsible for
   /// routing "needs a password" and "needs save-as" cases via [needsPassword]
@@ -291,13 +318,7 @@ class FileOperations {
       if (defaultLoc.isNotEmpty) initialDir = defaultLoc;
     }
 
-    final path = await FilePicker.platform.saveFile(
-      dialogTitle: 'Save As',
-      fileName: defaultName,
-      initialDirectory: initialDir,
-      type: FileType.custom,
-      allowedExtensions: ['txt', 'scrb', 'rtf'],
-    );
+    final path = await _pickSaveLocation(defaultName, initialDir);
     if (path == null) return SaveResult.failure('Cancelled');
 
     // The tab's format decides the extension, whatever the user typed.
@@ -342,10 +363,11 @@ class FileOperations {
       if (rtf == null) return SaveResult.failure('Cancelled');
     }
 
-    // The native dialog has no owner window, so Scrib stays clickable while it
-    // is open. saveActiveTabAs writes the ACTIVE tab: had the user switched
-    // tabs, another note's content would land in this file (with this tab's
-    // password for a .scrb) and that tab would be rebound to it. Refuse.
+    // saveActiveTabAs writes the ACTIVE tab: had the user switched tabs while
+    // the dialog was open, another note's content would land in this file
+    // (with this tab's password for a .scrb) and that tab would be rebound to
+    // it. The Save dialog is modal to Scrib's window, which should rule a
+    // switch out; this check stays as the backstop. Refuse.
     if (!identical(editor.activeTab, tab)) {
       return SaveResult.failure(saveTabSwitched);
     }
