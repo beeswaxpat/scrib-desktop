@@ -21,12 +21,19 @@ void main() {
     return found;
   }
 
+  // Cells attach their focus nodes outside the editor's, as in ScribEditor.
+  final host = FocusNode(canRequestFocus: false, skipTraversal: true);
+  tearDownAll(host.dispose);
+
   Widget harness(QuillController controller) => MaterialApp(
         home: Scaffold(
-          body: QuillEditor.basic(
-            controller: controller,
-            config: const QuillEditorConfig(
-              embedBuilders: [ScribTableEmbedBuilder()],
+          body: Focus(
+            focusNode: host,
+            child: QuillEditor.basic(
+              controller: controller,
+              config: QuillEditorConfig(
+                embedBuilders: [ScribTableEmbedBuilder(focusParent: host)],
+              ),
             ),
           ),
         ),

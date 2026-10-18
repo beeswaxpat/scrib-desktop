@@ -36,6 +36,15 @@ class ScribEditorState extends State<ScribEditor> {
 
   QuillController? _quillController;
   final _quillFocusNode = FocusNode();
+
+  /// Wraps the rich editor; table cells attach their focus nodes here rather
+  /// than under [_quillFocusNode] (see ScribTableEmbedBuilder.focusParent).
+  /// Never focusable itself, so it only groups the subtree.
+  final _richEditorHostFocusNode = FocusNode(
+    debugLabel: 'Scrib rich editor host',
+    canRequestFocus: false,
+    skipTraversal: true,
+  );
   final _quillScrollController = ScrollController();
   final _plainFocusNode = FocusNode();
 
@@ -81,6 +90,7 @@ class ScribEditorState extends State<ScribEditor> {
     _docChangesSub?.cancel();
     _quillController?.dispose();
     _quillFocusNode.dispose();
+    _richEditorHostFocusNode.dispose();
     _quillScrollController.dispose();
     _plainFocusNode.dispose();
     super.dispose();
@@ -354,6 +364,13 @@ class ScribEditorState extends State<ScribEditor> {
     // constants.dart): rich text font/size is controlled via inline Delta
     // attributes, not the per-tab plain-text settings.
 
+    return Focus(
+      focusNode: _richEditorHostFocusNode,
+      child: _buildQuillEditor(isDark),
+    );
+  }
+
+  Widget _buildQuillEditor(bool isDark) {
     return QuillEditor(
       controller: _quillController!,
       focusNode: _quillFocusNode,
@@ -393,10 +410,18 @@ class ScribEditorState extends State<ScribEditor> {
             await launchUrl(uri, mode: LaunchMode.externalApplication);
           }
         },
-        embedBuilders: const [
-          ScribImageEmbedBuilder(),
-          ScribTableEmbedBuilder(),
+        embedBuilders: [
+          const ScribImageEmbedBuilder(),
+          ScribTableEmbedBuilder(focusParent: _richEditorHostFocusNode),
         ],
+        // A click on a table belongs to the cell under it. Quill's tap
+        // recognizer handles it too (it is "transparent" to the arena), and its
+        // tap-up used to move the note's selection onto the table and reclaim
+        // the keyboard, so the first click on a fresh table typed into the
+        // note. Tap-down stays with quill: it only records the position, which
+        // quill's double-click handler dereferences.
+        onTapUp: (details, _) =>
+            isOverScribTable(context, details.globalPosition),
         // A crafted (or future-version) .scrb can carry an embed type this
         // build has no builder for; without a fallback flutter_quill throws
         // during widget build and the whole note becomes an error box. Render

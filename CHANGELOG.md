@@ -38,6 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   file from inside the Save dialog, which could replace a file before Scrib
   refused the save, so Scrib does not move to them.
 
+### Fixed
+
+- **A table cell could take the whole note's text.** After typing in a table
+  cell, clicking the empty area of the note and pressing Ctrl+End replaced the
+  cell's text with the entire note as plain text, and saving kept it. This
+  affected 1.10.2 and earlier. Clicking the note now takes the cursor out of
+  the cell first, so the two never share the keyboard.
+- **The first click on a new table now goes into the cell.** It used to leave
+  the cursor in the note, so the first letters typed landed below the table.
+- **Tab pressed in a table cell no longer inserts a tab into the note.**
+
 ## [1.10.2] - 2026-10-17 - Images in .rtf files
 
 A feature release. A rich-text note saved as `.rtf` now keeps its images, so

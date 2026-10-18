@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 import '../services/table_embed.dart';
 
@@ -181,10 +182,47 @@ bool remintDuplicateTableIds(QuillController controller) {
   return true;
 }
 
+/// Marks the render object of every editable table, so a pointer position can
+/// be tested for "lands on a table" (see [isOverScribTable]).
+const Object _scribTableHitMarker = Object();
+
+/// True when [globalPosition] lands on a table embed in the view of [context].
+///
+/// The rich editor's tap recognizer is "transparent": it also handles clicks
+/// that a cell's TextField has already won. Left alone it moved the note's
+/// selection onto the table and asked for the keyboard, so the first click on
+/// a fresh table typed into the note instead of the cell. The editor's
+/// onTapDown/onTapUp hooks use this to leave such clicks to the cell.
+bool isOverScribTable(BuildContext context, Offset globalPosition) {
+  final result = HitTestResult();
+  WidgetsBinding.instance
+      .hitTestInView(result, globalPosition, View.of(context).viewId);
+  return result.path.any((entry) {
+    final target = entry.target;
+    return target is RenderMetaData &&
+        identical(target.metaData, _scribTableHitMarker);
+  });
+}
+
 /// Renders Scrib table embeds as an editable grid. One builder handles all
 /// custom embeds and dispatches on the inner type.
 class ScribTableEmbedBuilder extends EmbedBuilder {
-  const ScribTableEmbedBuilder();
+  const ScribTableEmbedBuilder({required this.focusParent});
+
+  /// The focus node the cells attach to. It must be an ANCESTOR of the rich
+  /// editor's own focus node, never that node or one inside it.
+  ///
+  /// The embed is built inside flutter_quill's widget tree, so by default the
+  /// cells' focus nodes were descendants of the editor's focus node, and that
+  /// node reported hasFocus while a cell had primary focus. Quill then treated
+  /// itself as focused: a click on the note asked for the keyboard without
+  /// taking focus from the cell, attaching quill's text-input client (holding
+  /// the whole note) while the cell still received keys, and the cell's text
+  /// was replaced by the note. Quill's key handler also saw the cell's keys
+  /// (Tab inserted a tab into the note). Attached here instead, the editor's
+  /// focus state is truthful and the cells' keys still bubble to the app's
+  /// shortcuts.
+  final FocusNode focusParent;
 
   @override
   String get key => ScribTable.kType;
@@ -194,12 +232,38 @@ class ScribTableEmbedBuilder extends EmbedBuilder {
     final table = ScribTable.fromData(embedContext.node.value.data);
     if (table == null) return _brokenTable(context);
 
-    return _EditableTable(
-      key: ValueKey(table.id),
-      controller: embedContext.controller,
-      table: table,
-      readOnly: embedContext.readOnly,
+    final controller = embedContext.controller;
+    return Focus(
+      parentNode: focusParent,
+      canRequestFocus: false,
+      skipTraversal: true,
+      child: Listener(
+        onPointerDown: (_) => _holdEditorKeyboard(controller),
+        child: MetaData(
+          metaData: _scribTableHitMarker,
+          child: _EditableTable(
+            key: ValueKey(table.id),
+            controller: controller,
+            table: table,
+            readOnly: embedContext.readOnly,
+          ),
+        ),
+      ),
     );
+  }
+
+  /// A pointer on the table is about to focus a cell, which takes focus from
+  /// the editor. If the editor is waiting to rebuild at that moment (quill's
+  /// double-click handler moves its selection when a click on the note is
+  /// followed quickly by one on a cell), quill's focus listener calls
+  /// requestKeyboard, and on an unfocused editor that takes focus straight
+  /// back from the cell. Skip that one request. The flag is cleared after the
+  /// frame, so a later click on the note is never ignored.
+  static void _holdEditorKeyboard(QuillController controller) {
+    controller.skipRequestKeyboard = true;
+    WidgetsBinding.instance
+      ..addPostFrameCallback((_) => controller.skipRequestKeyboard = false)
+      ..ensureVisualUpdate();
   }
 
   Widget _brokenTable(BuildContext context) {
@@ -228,6 +292,7 @@ class _EditableTable extends StatefulWidget {
   final QuillController controller;
   final ScribTable table;
   final bool readOnly;
+
 
   const _EditableTable({
     super.key,
