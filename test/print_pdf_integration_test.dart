@@ -6,7 +6,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:scrib_desktop/services/print_service.dart';
 import 'package:scrib_desktop/services/windows_print.dart';
-import 'package:win32/win32.dart';
 import 'package:ffi/ffi.dart';
 
 /// End-to-end print through the real native path: RichEdit layout, StartDoc,
@@ -17,6 +16,15 @@ import 'package:ffi/ffi.dart';
 /// Opt-in, because it needs a Windows machine with that printer installed:
 ///   set SCRIB_PRINT_TEST=1 (and optionally SCRIB_PRINT_OUT to a folder)
 ///   flutter test test/print_pdf_integration_test.dart
+final _gdi32 = DynamicLibrary.open('gdi32.dll');
+final _createDC = _gdi32.lookupFunction<
+    IntPtr Function(Pointer<Utf16>, Pointer<Utf16>, Pointer<Utf16>, Pointer),
+    int Function(Pointer<Utf16>, Pointer<Utf16>, Pointer<Utf16>, Pointer)>(
+  'CreateDCW',
+);
+final _deleteDC =
+    _gdi32.lookupFunction<Int32 Function(IntPtr), int Function(int)>('DeleteDC');
+
 void main() {
   final enabled =
       Platform.isWindows && Platform.environment['SCRIB_PRINT_TEST'] == '1';
@@ -34,7 +42,7 @@ void main() {
   int pdfDc() {
     final device = 'Microsoft Print to PDF'.toNativeUtf16();
     try {
-      return CreateDC(nullptr, device, nullptr, nullptr);
+      return _createDC(nullptr, device, nullptr, nullptr);
     } finally {
       calloc.free(device);
     }
@@ -53,7 +61,7 @@ void main() {
       outcome = printRtfToDc(hdc, job.rtf,
           docName: job.title, plan: plan, debugOutputPath: file.path);
     } finally {
-      DeleteDC(hdc);
+      _deleteDC(hdc);
     }
     expect(outcome.status, PrintStatus.printed, reason: '$outcome');
     if (expectPages >= 0) expect(outcome.pageCount, expectPages);
@@ -161,7 +169,7 @@ void main() {
       expect(outcome.status, PrintStatus.noPagesInRange);
       expect(outcome.pageCount, 1);
     } finally {
-      DeleteDC(hdc);
+      _deleteDC(hdc);
     }
     expect(File('${out.path}${Platform.pathSeparator}never.pdf').existsSync(),
         isFalse);

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:ffi';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
@@ -337,6 +338,44 @@ void main() {
           [0, 0, 1, 1, 2, 2]);
       expect(const PrintPlan(copies: 0).pageOrder(2), [0, 1]);
     });
+  });
+
+  group('dialog-side helpers', () {
+    final skip = Platform.isWindows ? false : 'Windows API';
+
+    test('the owner-window lookup finds no window in a test process', () {
+      // flutter_tester has no FLUTTER_RUNNER_WIN32_WINDOW of its own, and a
+      // window of that class in another process (another Flutter app) must
+      // not be picked.
+      expect(debugFindAppWindow(), 0);
+    }, skip: skip);
+
+    test('the printer name is read from a DEVNAMES block, then freed', () {
+      final kernel32 = DynamicLibrary.open('kernel32.dll');
+      final globalAlloc = kernel32.lookupFunction<Pointer Function(Uint32, IntPtr),
+          Pointer Function(int, int)>('GlobalAlloc');
+      final globalLock = kernel32.lookupFunction<Pointer Function(Pointer),
+          Pointer Function(Pointer)>('GlobalLock');
+      final globalUnlock = kernel32.lookupFunction<Int32 Function(Pointer),
+          int Function(Pointer)>('GlobalUnlock');
+
+      // DEVNAMES: four WORD offsets (in characters from the block start),
+      // then driver, device and output names, each NUL-terminated.
+      const driver = 'winspool', device = 'Microsoft Print to PDF', port = 'PORTPROMPT:';
+      final chars = <int>[
+        4, 4 + driver.length + 1, 4 + driver.length + 1 + device.length + 1, 0,
+        ...driver.codeUnits, 0, ...device.codeUnits, 0, ...port.codeUnits, 0,
+      ];
+      const gmemMoveable = 0x0002;
+      final block = globalAlloc(gmemMoveable, chars.length * 2);
+      expect(block.address, isNot(0));
+      final p = globalLock(block).cast<Uint16>();
+      p.asTypedList(chars.length).setAll(0, chars);
+      globalUnlock(block);
+
+      expect(debugPrinterNameAndFree(block), device);
+      expect(debugPrinterNameAndFree(nullptr), isNull);
+    }, skip: skip);
   });
 
   test('native struct layouts match the x64 Windows SDK headers', () {

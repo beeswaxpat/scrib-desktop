@@ -4,7 +4,6 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
-import 'package:win32/win32.dart';
 
 /// Printing through Windows' own RichEdit control (msftedit.dll, the engine
 /// WordPad prints with), driven over dart:ffi.
@@ -189,6 +188,17 @@ final class _DocInfo extends Struct {
   external int fwType;
 }
 
+final class _Rect extends Struct {
+  @Int32()
+  external int left;
+  @Int32()
+  external int top;
+  @Int32()
+  external int right;
+  @Int32()
+  external int bottom;
+}
+
 @Packed(4)
 final class _CharRange extends Struct {
   @Int32()
@@ -203,8 +213,8 @@ final class _FormatRange extends Struct {
   external int hdc;
   @IntPtr()
   external int hdcTarget;
-  external RECT rc;
-  external RECT rcPage;
+  external _Rect rc;
+  external _Rect rcPage;
   external _CharRange chrg;
 }
 
@@ -232,7 +242,25 @@ Map<String, int> debugStructSizes() => {
       'EDITSTREAM': sizeOf<_EditStream>(),
     };
 
-// ── Constants (commdlg.h, richedit.h, winerror.h) ─────────────────────────
+// ── Constants (winuser.h, wingdi.h, commdlg.h, richedit.h, winerror.h) ────
+
+const int _wmUser = 0x0400;
+const int _esMultiline = 0x0004;
+
+/// HWND_MESSAGE, (HWND)-3: parent for a message-only window.
+const int _hwndMessage = -3;
+
+const int _sOk = 0;
+
+// GetDeviceCaps indexes.
+const int _horzRes = 8;
+const int _vertRes = 10;
+const int _logPixelsX = 88;
+const int _logPixelsY = 90;
+const int _physicalWidth = 110;
+const int _physicalHeight = 111;
+const int _physicalOffsetX = 112;
+const int _physicalOffsetY = 113;
 
 const int _pdNoSelection = 0x00000004;
 const int _pdPageNums = 0x00000002;
@@ -242,11 +270,11 @@ const int _pdNoCurrentPage = 0x00800000;
 const int _startPageGeneral = 0xFFFFFFFF;
 const int _pdResultPrint = 1;
 
-const int _emExGetSel = WM_USER + 52;
-const int _emExLimitText = WM_USER + 53;
-const int _emExSetSel = WM_USER + 55;
-const int _emFormatRange = WM_USER + 57;
-const int _emStreamIn = WM_USER + 73;
+const int _emExGetSel = _wmUser + 52;
+const int _emExLimitText = _wmUser + 53;
+const int _emExSetSel = _wmUser + 55;
+const int _emFormatRange = _wmUser + 57;
+const int _emStreamIn = _wmUser + 73;
 const int _sfRtf = 0x0002;
 
 const int _errorCancelled = 1223;
@@ -270,8 +298,63 @@ const int _minTextAreaTwips = 1440;
 /// Layout gives up past this many pages instead of looping without end.
 const int _maxPages = 100000;
 
+// ── Bindings ──────────────────────────────────────────────────────────────
+//
+// Declared here rather than taken from the win32 package, the same way
+// atomic_write.dart declares MoveFileExW: printing then depends on nothing
+// but the Windows API itself, so a package upgrade elsewhere in the app can
+// never change what these calls do. Signatures follow the x64 SDK headers
+// (HWND, HDC, HINSTANCE, WPARAM, LPARAM and LRESULT are pointer-sized).
+// Top-level finals are lazy, so nothing loads until printing runs.
+
+final _user32 = DynamicLibrary.open('user32.dll');
+final _kernel32 = DynamicLibrary.open('kernel32.dll');
+final _ole32 = DynamicLibrary.open('ole32.dll');
 final _comdlg32 = DynamicLibrary.open('comdlg32.dll');
 final _gdi32 = DynamicLibrary.open('gdi32.dll');
+
+final _createWindowEx = _user32.lookupFunction<
+    IntPtr Function(Uint32, Pointer<Utf16>, Pointer<Utf16>, Uint32, Int32,
+        Int32, Int32, Int32, IntPtr, IntPtr, IntPtr, Pointer),
+    int Function(int, Pointer<Utf16>, Pointer<Utf16>, int, int, int, int, int,
+        int, int, int, Pointer)>('CreateWindowExW');
+final _sendMessage = _user32.lookupFunction<
+    IntPtr Function(IntPtr, Uint32, IntPtr, IntPtr),
+    int Function(int, int, int, int)>('SendMessageW');
+final _destroyWindow = _user32
+    .lookupFunction<Int32 Function(IntPtr), int Function(int)>('DestroyWindow');
+final _findWindowEx = _user32.lookupFunction<
+    IntPtr Function(IntPtr, IntPtr, Pointer<Utf16>, Pointer<Utf16>),
+    int Function(int, int, Pointer<Utf16>, Pointer<Utf16>)>('FindWindowExW');
+final _getWindowThreadProcessId = _user32.lookupFunction<
+    Uint32 Function(IntPtr, Pointer<Uint32>),
+    int Function(int, Pointer<Uint32>)>('GetWindowThreadProcessId');
+
+final _loadLibrary = _kernel32.lookupFunction<IntPtr Function(Pointer<Utf16>),
+    int Function(Pointer<Utf16>)>('LoadLibraryW');
+final _getModuleHandle = _kernel32.lookupFunction<
+    IntPtr Function(Pointer<Utf16>),
+    int Function(Pointer<Utf16>)>('GetModuleHandleW');
+final _getCurrentProcessId = _kernel32
+    .lookupFunction<Uint32 Function(), int Function()>('GetCurrentProcessId');
+final _getLastError =
+    _kernel32.lookupFunction<Uint32 Function(), int Function()>('GetLastError');
+final _globalLock = _kernel32.lookupFunction<Pointer Function(Pointer),
+    Pointer Function(Pointer)>('GlobalLock');
+final _globalUnlock = _kernel32
+    .lookupFunction<Int32 Function(Pointer), int Function(Pointer)>('GlobalUnlock');
+final _globalFree = _kernel32.lookupFunction<Pointer Function(Pointer),
+    Pointer Function(Pointer)>('GlobalFree');
+
+final _oleInitialize = _ole32
+    .lookupFunction<Int32 Function(Pointer), int Function(Pointer)>('OleInitialize');
+final _oleUninitialize =
+    _ole32.lookupFunction<Void Function(), void Function()>('OleUninitialize');
+
+final _getDeviceCaps = _gdi32.lookupFunction<Int32 Function(IntPtr, Int32),
+    int Function(int, int)>('GetDeviceCaps');
+final _deleteDC =
+    _gdi32.lookupFunction<Int32 Function(IntPtr), int Function(int)>('DeleteDC');
 
 final _printDlgEx = _comdlg32.lookupFunction<
     Int32 Function(Pointer<_PrintDlgEx>),
@@ -353,7 +436,7 @@ PrintOutcome printRtfWithDialog(String rtf, String docName) {
     _freeGlobal(pd.ref.hDevMode);
     _freeGlobal(pd.ref.hDevNames);
 
-    if (hr != S_OK) {
+    if (hr != _sOk) {
       return PrintOutcome(PrintStatus.failed,
           detail: 'PrintDlgEx 0x${(hr & 0xFFFFFFFF).toRadixString(16)}');
     }
@@ -390,7 +473,7 @@ PrintOutcome printRtfWithDialog(String rtf, String docName) {
         printer: printer,
         detail: outcome.detail);
   } finally {
-    if (hdc != 0) DeleteDC(hdc);
+    if (hdc != 0) _deleteDC(hdc);
     calloc.free(ranges);
     calloc.free(pd);
     ole.exit();
@@ -409,14 +492,14 @@ class _OleScope {
   const _OleScope._(this._owned);
 
   static _OleScope? enter() {
-    final hr = OleInitialize(nullptr);
+    final hr = _oleInitialize(nullptr);
     if (hr >= 0) return const _OleScope._(true);
     if ((hr & 0xFFFFFFFF) == _rpcEChangedMode) return const _OleScope._(false);
     return null;
   }
 
   void exit() {
-    if (_owned) OleUninitialize();
+    if (_owned) _oleUninitialize();
   }
 }
 
@@ -476,7 +559,7 @@ PrintOutcome printRtfToDc(
 
     final job = _startDoc(hdc, info);
     if (job <= 0) {
-      final error = GetLastError();
+      final error = _getLastError();
       if (error == _errorCancelled) {
         return PrintOutcome(PrintStatus.cancelled, pageCount: starts.length);
       }
@@ -491,7 +574,7 @@ PrintOutcome printRtfToDc(
         return PrintOutcome(PrintStatus.failed,
             pageCount: starts.length,
             pagesPrinted: printed,
-            detail: 'StartPage error ${GetLastError()}');
+            detail: 'StartPage error ${_getLastError()}');
       }
       fr.ref.chrg
         ..cpMin = starts[page]
@@ -502,7 +585,7 @@ PrintOutcome printRtfToDc(
         return PrintOutcome(PrintStatus.failed,
             pageCount: starts.length,
             pagesPrinted: printed,
-            detail: 'EndPage error ${GetLastError()}');
+            detail: 'EndPage error ${_getLastError()}');
       }
       printed++;
     }
@@ -510,7 +593,7 @@ PrintOutcome printRtfToDc(
       return PrintOutcome(PrintStatus.failed,
           pageCount: starts.length,
           pagesPrinted: printed,
-          detail: 'EndDoc error ${GetLastError()}');
+          detail: 'EndDoc error ${_getLastError()}');
     }
     return PrintOutcome(PrintStatus.printed,
         pageCount: starts.length, pagesPrinted: printed);
@@ -527,12 +610,12 @@ int _findAppWindow() {
   final className = 'FLUTTER_RUNNER_WIN32_WINDOW'.toNativeUtf16();
   final pid = calloc<Uint32>();
   try {
-    final me = GetCurrentProcessId();
+    final me = _getCurrentProcessId();
     var hwnd = 0;
     for (var guard = 0; guard < 1000; guard++) {
-      hwnd = FindWindowEx(0, hwnd, className, nullptr);
+      hwnd = _findWindowEx(0, hwnd, className, nullptr);
       if (hwnd == 0) return 0;
-      GetWindowThreadProcessId(hwnd, pid);
+      _getWindowThreadProcessId(hwnd, pid);
       if (pid.value == me) return hwnd;
     }
     return 0;
@@ -544,7 +627,7 @@ int _findAppWindow() {
 
 String? _printerName(Pointer hDevNames) {
   if (hDevNames.address == 0) return null;
-  final locked = GlobalLock(hDevNames);
+  final locked = _globalLock(hDevNames);
   if (locked.address == 0) return null;
   try {
     // DEVNAMES offsets count characters from the start of the block.
@@ -552,12 +635,29 @@ String? _printerName(Pointer hDevNames) {
     final name = (locked.cast<Uint16>() + offset).cast<Utf16>().toDartString();
     return name.isEmpty ? null : name;
   } finally {
-    GlobalUnlock(hDevNames);
+    _globalUnlock(hDevNames);
   }
 }
 
 void _freeGlobal(Pointer handle) {
-  if (handle.address != 0) GlobalFree(handle);
+  if (handle.address != 0) _globalFree(handle);
+}
+
+/// Test seam for the dialog side, which no automated test can reach through
+/// PrintDlgEx: finds the owner window (0 in a test, which has no Scrib window).
+@visibleForTesting
+int debugFindAppWindow() => _findAppWindow();
+
+/// Test seam for the dialog side: reads the printer name out of a DEVNAMES
+/// block the test allocated with GlobalAlloc, then frees it, the way
+/// [printRtfWithDialog] handles the block the dialog returns.
+@visibleForTesting
+String? debugPrinterNameAndFree(Pointer hDevNames) {
+  try {
+    return _printerName(hDevNames);
+  } finally {
+    _freeGlobal(hDevNames);
+  }
 }
 
 /// Page geometry in twips, in the printer DC's coordinates, whose origin is
@@ -570,19 +670,19 @@ class _PageLayout {
       this.pageBottom, this.left, this.top, this.right, this.bottom);
 
   static _PageLayout? of(int hdc) {
-    final dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
-    final dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
+    final dpiX = _getDeviceCaps(hdc, _logPixelsX);
+    final dpiY = _getDeviceCaps(hdc, _logPixelsY);
     if (dpiX <= 0 || dpiY <= 0) return null;
     int tx(int px) => px * 1440 ~/ dpiX;
     int ty(int px) => px * 1440 ~/ dpiY;
 
-    final printableW = tx(GetDeviceCaps(hdc, HORZRES));
-    final printableH = ty(GetDeviceCaps(hdc, VERTRES));
+    final printableW = tx(_getDeviceCaps(hdc, _horzRes));
+    final printableH = ty(_getDeviceCaps(hdc, _vertRes));
     if (printableW <= 0 || printableH <= 0) return null;
-    var physW = tx(GetDeviceCaps(hdc, PHYSICALWIDTH));
-    var physH = ty(GetDeviceCaps(hdc, PHYSICALHEIGHT));
-    final offX = tx(GetDeviceCaps(hdc, PHYSICALOFFSETX));
-    final offY = ty(GetDeviceCaps(hdc, PHYSICALOFFSETY));
+    var physW = tx(_getDeviceCaps(hdc, _physicalWidth));
+    var physH = ty(_getDeviceCaps(hdc, _physicalHeight));
+    final offX = tx(_getDeviceCaps(hdc, _physicalOffsetX));
+    final offY = ty(_getDeviceCaps(hdc, _physicalOffsetY));
     // Display-like devices report no physical page; use the printable area.
     if (physW <= 0) physW = printableW;
     if (physH <= 0) physH = printableH;
@@ -637,8 +737,8 @@ class _RichEditDocument {
     try {
       // Loaded for the life of the process, like WordPad does. The class is
       // registered process-wide and stays valid for later prints.
-      if (LoadLibrary(dll) == 0) return null;
-      // HWND_MESSAGE: a window that never shows and receives no broadcasts.
+      if (_loadLibrary(dll) == 0) return null;
+      // _hwndMessage: a window that never shows and receives no broadcasts.
       // This thread does not pump messages while it renders, and a hidden
       // top-level window here would stall any program that broadcasts a
       // settings change until the print finished.
@@ -646,8 +746,8 @@ class _RichEditDocument {
       // Not ES_READONLY: a read-only RichEdit refuses to insert the images
       // in the RTF it is given, and the note prints without its pictures.
       // A message-only window takes no keyboard or mouse input anyway.
-      final hwnd = CreateWindowEx(0, cls, empty, ES_MULTILINE, 0, 0, 0, 0,
-          HWND_MESSAGE, 0, GetModuleHandle(nullptr), nullptr);
+      final hwnd = _createWindowEx(0, cls, empty, _esMultiline, 0, 0, 0, 0,
+          _hwndMessage, 0, _getModuleHandle(nullptr), nullptr);
       if (hwnd == 0) return null;
       final doc = _RichEditDocument._(hwnd);
       if (!doc._streamIn(rtf)) {
@@ -664,7 +764,7 @@ class _RichEditDocument {
 
   bool _streamIn(String rtf) {
     // Without this RichEdit stops reading at 32K characters of text.
-    SendMessage(hwnd, _emExLimitText, 0, 0x7FFFFFFE);
+    _sendMessage(hwnd, _emExLimitText, 0, 0x7FFFFFFE);
     final bytes = Uint8List.fromList(utf8.encode(rtf));
     final es = calloc<_EditStream>();
     try {
@@ -675,7 +775,7 @@ class _RichEditDocument {
             _streamInCallback, 1);
       _streamSource = bytes;
       _streamOffset = 0;
-      SendMessage(hwnd, _emStreamIn, _sfRtf, es.address);
+      _sendMessage(hwnd, _emStreamIn, _sfRtf, es.address);
       return es.ref.dwError == 0;
     } finally {
       _streamSource = null;
@@ -694,8 +794,8 @@ class _RichEditDocument {
       all.ref
         ..cpMin = 0
         ..cpMax = -1;
-      SendMessage(hwnd, _emExSetSel, 0, all.address);
-      SendMessage(hwnd, _emExGetSel, 0, all.address);
+      _sendMessage(hwnd, _emExSetSel, 0, all.address);
+      _sendMessage(hwnd, _emExGetSel, 0, all.address);
       final end = all.ref.cpMax;
       final starts = <int>[];
       var cp = 0;
@@ -718,12 +818,12 @@ class _RichEditDocument {
   /// EM_FORMATRANGE: lays out (and with [render], draws) one page starting
   /// at fr.chrg.cpMin and returns where the next page starts.
   int formatRange(Pointer<_FormatRange> fr, {required bool render}) =>
-      SendMessage(hwnd, _emFormatRange, render ? 1 : 0, fr.address);
+      _sendMessage(hwnd, _emFormatRange, render ? 1 : 0, fr.address);
 
-  void _releaseFormatCache() => SendMessage(hwnd, _emFormatRange, 0, 0);
+  void _releaseFormatCache() => _sendMessage(hwnd, _emFormatRange, 0, 0);
 
   void dispose() {
     _releaseFormatCache();
-    DestroyWindow(hwnd);
+    _destroyWindow(hwnd);
   }
 }

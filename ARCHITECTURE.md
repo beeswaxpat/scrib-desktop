@@ -301,10 +301,12 @@ message-only RichEdit (`EM_STREAMIN`, from memory), lays the pages out for
 the chosen printer with `EM_FORMATRANGE` and prints the chosen pages and
 copies between `StartDoc` and `EndDoc`. Two quirks are load-bearing: the
 RichEdit must not be `ES_READONLY` (a read-only control silently drops every
-image in the RTF), and the thread needs `OleInitialize`. Struct layouts follow
-the x64 SDK headers (`richedit.h` packs to 4 bytes) and are pinned by
-`print_service_test.dart`; a wrong layout is a native crash, which loses
-unsaved notes. `print_pdf_integration_test.dart` prints through the real path
+image in the RTF), and the thread needs `OleInitialize`. Every Windows call
+and struct is declared in `windows_print.dart` itself, not taken from the
+`win32` package, so a dependency upgrade elsewhere cannot change what
+printing calls. Struct layouts follow the x64 SDK headers (`richedit.h` packs
+to 4 bytes) and are pinned by `print_service_test.dart`; a wrong layout is a
+native crash, which loses unsaved notes. `print_pdf_integration_test.dart` prints through the real path
 to Microsoft Print to PDF when `SCRIB_PRINT_TEST=1` is set.
 
 ## .scrb format
