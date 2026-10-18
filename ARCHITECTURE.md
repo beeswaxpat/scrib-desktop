@@ -109,17 +109,20 @@ through `AtomicWrite` rather than writing files directly.
    flag says whether anything was left out, so the check and the bytes written
    cannot disagree.
 
-5. **flutter_quill stays pinned at 11.5.0.** Embed mechanics (custom block
+5. **flutter_quill stays pinned at 11.6.0.** Embed mechanics (custom block
    embeds carrying JSON strings, `unknownEmbedBuilder`, the shortcut-collision
    workaround in `editor_widget.dart`, document change streams) are verified
    against this exact version. Quill upgrades have changed embed and shortcut
    behavior between minor versions; an upgrade requires re-running the full
    test suite plus manual verification of tables, images, links, and every
    documented shortcut inside a rich tab. `pubspec.yaml` declares the exact
-   version (`flutter_quill: 11.5.0`, no caret), so the pin holds at resolution
-   and not only in `pubspec.lock`, and `.github/dependabot.yml` ignores the
-   package so no automated PR crosses it. The CI Flutter version is pinned in
-   lockstep (see `.github/workflows/*.yml`).
+   version (`flutter_quill: 11.6.0`, no caret), so the pin holds at resolution
+   and not only in `pubspec.lock`, and `.github/dependabot.yml` holds back
+   major versions, so 12.x stays a manual upgrade. The CI Flutter version is
+   pinned in lockstep (see `.github/workflows/*.yml`), because new Flutter
+   releases add members quill has to implement: Flutter 3.44 added
+   `TextInputClient.onFocusReceived`, and quill 11.5.0, which lacks it, does
+   not compile on 3.44 or later.
 
 6. **Link allowlist at BOTH ends.** Only `http`, `https`, and `mailto` URLs
    exist in Scrib documents. `normalizeLinkUrl` gates what the link dialog will

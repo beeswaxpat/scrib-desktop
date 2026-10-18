@@ -35,7 +35,7 @@ jobs:
           # breaks the Windows build whenever a new Flutter framework release
           # adds abstract members the pinned flutter_quill version doesn't yet
           # implement. Bump this in lockstep with the flutter_quill dependency.
-          flutter-version: 3.38.6
+          flutter-version: 3.47.7
           cache: true
 
       - name: Install dependencies

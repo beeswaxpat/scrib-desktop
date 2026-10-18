@@ -13,7 +13,7 @@ updates:
     schedule:
       interval: weekly
     ignore:
-      # Pinned at 11.5.0: embed mechanics, shortcut handling, and document
+      # Pinned at 11.6.0: embed mechanics, shortcut handling, and document
       # change streams are verified against this exact version. This used to be
       # a blanket ignore, which also switched off 11.x patch and security
       # releases for the editor core and its quill_* transitive chain. Only

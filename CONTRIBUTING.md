@@ -24,11 +24,11 @@ flutter run -d windows        # debug
 flutter build windows --release
 ```
 
-**Requirements:** Flutter stable (CI pins 3.38.6; use that version for
+**Requirements:** Flutter stable (CI pins 3.47.7; use that version for
 reproducible results), Windows 10+, Visual Studio 2022 with the Desktop C++
 workload. The `flutter_quill` dependency is declared as an exact version in
-`pubspec.yaml` (`11.5.0`, no caret) and is excluded from Dependabot; see
-ARCHITECTURE.md for why upgrades need extra verification.
+`pubspec.yaml` (`11.6.0`, no caret) and Dependabot holds back its major
+versions; see ARCHITECTURE.md for why upgrades need extra verification.
 
 ## Before Submitting a PR
 

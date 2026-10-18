@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     and cloud printers such as Universal Print upload it.
   - A locked tab cannot be printed. Unlock it first.
 
+### Changed
+
+- **Built with Flutter 3.47.7** (was 3.38.6). The rich-text editor package,
+  `flutter_quill`, moves from 11.5.0 to 11.6.0, because 11.5.0 does not build
+  on Flutter 3.44 or later. `url_launcher`, which opens note links, moves to
+  6.3.3.
+
 ## [1.10.2] - 2026-10-17 - Images in .rtf files
 
 A feature release. A rich-text note saved as `.rtf` now keeps its images, so

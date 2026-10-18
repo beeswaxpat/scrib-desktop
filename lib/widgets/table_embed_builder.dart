@@ -146,7 +146,7 @@ bool commitTableEdit(QuillController controller, ScribTable table) {
 /// Re-mints the id of every table embed that repeats an id already seen earlier
 /// in the document. Returns true if anything was rewritten.
 ///
-/// Copy/paste re-inserts the sliced Delta verbatim (flutter_quill 11.5.0 has no
+/// Copy/paste re-inserts the sliced Delta verbatim (flutter_quill 11.6.0 has no
 /// hook that rewrites an embed payload on the way in), so a pasted table
 /// arrives carrying the ORIGINAL's id. [findTableOffset] returns the first
 /// match, so a cell edit made in the copy committed into the original and

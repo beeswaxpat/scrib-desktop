@@ -346,9 +346,8 @@ class EditorProvider extends ChangeNotifier {
     this._fileService,
     this._settingsService, {
     @visibleForTesting DateTime Function()? now,
-    @visibleForTesting Duration autoLockPollInterval = const Duration(seconds: 10),
-  })  : _now = now ?? DateTime.now,
-        _autoLockPollInterval = autoLockPollInterval {
+    @visibleForTesting this._autoLockPollInterval = const Duration(seconds: 10),
+  })  : _now = now ?? DateTime.now {
     _lastActivity = _now();
     _settingsService.addListener(_onSettingsChanged);
     _updateAutoSave();

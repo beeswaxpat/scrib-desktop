@@ -71,7 +71,7 @@ Press `F1` in the app for the full keyboard shortcut reference.
 
 ## Building from Source
 
-Requires [Flutter](https://flutter.dev/) 3.38.6 (the version CI builds and releases on), Windows 10 or later, and Visual Studio 2022 with the **Desktop development with C++** workload.
+Requires [Flutter](https://flutter.dev/) 3.47.7 (the version CI builds and releases on), Windows 10 or later, and Visual Studio 2022 with the **Desktop development with C++** workload.
 
 ```bash
 git clone https://github.com/beeswaxpat/scrib-desktop.git

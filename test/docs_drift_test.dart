@@ -15,11 +15,11 @@ void main() {
     final match =
         RegExp(r'^\s*flutter_quill:\s*(\S+)', multiLine: true).firstMatch(pubspec);
     expect(match, isNotNull, reason: 'pubspec.yaml must declare flutter_quill');
-    expect(match!.group(1), '11.5.0',
+    expect(match!.group(1), '11.6.0',
         reason: 'ARCHITECTURE.md invariant 5 and CONTRIBUTING.md state an exact '
             'pin; a range puts the version back in the lockfile only');
-    expect(read('ARCHITECTURE.md'), contains('11.5.0'));
-    expect(read('CONTRIBUTING.md'), contains('11.5.0'));
+    expect(read('ARCHITECTURE.md'), contains('11.6.0'));
+    expect(read('CONTRIBUTING.md'), contains('11.6.0'));
   });
 
   test('ARCHITECTURE.md does not claim a single funnel for writes', () {
