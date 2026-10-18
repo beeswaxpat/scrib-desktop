@@ -25,6 +25,10 @@ lib/
     file_operations.dart     Manual save / save-as decision tree, including the
                              encryption-toggle extension swap
     rtf_service.dart         Delta JSON to RTF and back
+    print_service.dart       File > Print: the print gate (locked, empty,
+                             encrypted), note to RTF, background isolates
+    windows_print.dart       Windows RichEdit + print dialog over dart:ffi;
+                             draws pages on the printer DC, writes no file
     settings_service.dart    Hive-backed settings, session snapshot storage,
                              one-time import of the pre-1.10 settings folder
     table_embed.dart         ScribTable model + JSON codec for table embeds
@@ -265,6 +269,32 @@ down under live focus messages and quitting crashed inside
 `flutter_windows.dll` (exit code 0xC000041D). `onWindowClose` drops the close
 guard and calls `windowManager.close()`, so Windows deactivates and destroys
 the window through the runner's normal `WM_DESTROY` path.
+
+## Printing
+
+Printing is not a fifth writer: no step of it touches the disk. Ctrl+P
+(`MainScreen._printActiveTab`) checks `printGateFor(tab)` first: a locked tab
+never prints, a blank note is refused and an encrypted one (flagged with
+Ctrl+E or backed by a `.scrb`) asks, because the printout, the Windows print
+queue's spool file and a cloud printer's upload are all unencrypted. The
+content is snapshotted once and converted in a background isolate (rich text
+through `RtfService.exportDelta` like any `.rtf` save, with the rich editor's
+default font; plain text through `RtfService.plainTextToRtf` in the tab's
+font). The lock state is re-checked after every await, so an auto-lock that
+lands while a dialog is open stops the print.
+
+`windows_print.dart` then runs synchronously in a second isolate, because
+windows, device contexts and COM apartments belong to one thread: it shows
+`PrintDlgExW` owned by Scrib's window, streams the RTF into a hidden
+message-only RichEdit (`EM_STREAMIN`, from memory), lays the pages out for
+the chosen printer with `EM_FORMATRANGE` and prints the chosen pages and
+copies between `StartDoc` and `EndDoc`. Two quirks are load-bearing: the
+RichEdit must not be `ES_READONLY` (a read-only control silently drops every
+image in the RTF), and the thread needs `OleInitialize`. Struct layouts follow
+the x64 SDK headers (`richedit.h` packs to 4 bytes) and are pinned by
+`print_service_test.dart`; a wrong layout is a native crash, which loses
+unsaved notes. `print_pdf_integration_test.dart` prints through the real path
+to Microsoft Print to PDF when `SCRIB_PRINT_TEST=1` is set.
 
 ## .scrb format
 

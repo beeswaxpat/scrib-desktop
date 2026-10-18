@@ -16,6 +16,7 @@ import '../providers/editor_provider.dart';
 import '../services/atomic_write.dart' show canonicalPath;
 import '../services/file_operations.dart';
 import '../services/file_service.dart';
+import '../services/print_service.dart';
 import '../services/rtf_service.dart';
 import '../services/settings_service.dart';
 import '../widgets/command_palette.dart';
@@ -46,6 +47,20 @@ int? tabIndexForDigit(int digit, int tabCount) {
   final index = digit - 1;
   return index < tabCount ? index : null;
 }
+
+/// What File > Print must do first for [tab] (see [PrintService.gate]).
+///
+/// A tab counts as encrypted when it is flagged for encryption or its file
+/// on disk is a `.scrb`: Ctrl+E flips the flag without touching the path, so
+/// either one alone means the user treats this note as encrypted.
+@visibleForTesting
+PrintGate printGateFor(EditorTab tab) => PrintService.gate(
+      isLocked: tab.isLocked,
+      encrypted: tab.isEncrypted || tab.hasScrbPath,
+      richText: tab.mode == EditorMode.richText,
+      plainText: tab.controller.text,
+      deltaJson: tab.deltaJson,
+    );
 
 /// Session-local history of closed, file-backed tabs for Ctrl+Shift+T.
 /// Untitled tabs have no on-disk identity and are not restorable. Paths are
@@ -95,6 +110,10 @@ class _MainScreenState extends State<MainScreen> {
 
   /// Closed file-backed tabs this session, most recent last (Ctrl+Shift+T).
   final _closedTabs = ClosedTabHistory();
+
+  /// True from Ctrl+P until the print dialog and the job are done, so a
+  /// second Ctrl+P cannot open a second dialog over the first.
+  bool _printing = false;
 
   /// The active tab's QuillController (null in plain-text mode). Published by
   /// ScribEditor so the formatting toolbar and find bar can react without a
@@ -276,6 +295,7 @@ class _MainScreenState extends State<MainScreen> {
       const SingleActivator(LogicalKeyboardKey.keyO, control: true): () => _openFileDialog(context),
       const SingleActivator(LogicalKeyboardKey.keyS, control: true): () => _saveFile(context),
       const SingleActivator(LogicalKeyboardKey.keyS, control: true, shift: true): () => _saveFileAs(context),
+      const SingleActivator(LogicalKeyboardKey.keyP, control: true): () => _printActiveTab(context),
       const SingleActivator(LogicalKeyboardKey.keyW, control: true): () => _closeCurrentTab(context),
       const SingleActivator(LogicalKeyboardKey.keyF, control: true): () => editor.openFind(),
       const SingleActivator(LogicalKeyboardKey.keyH, control: true): () => editor.openFindReplace(),
@@ -409,6 +429,12 @@ class _MainScreenState extends State<MainScreen> {
               shortcut: const SingleActivator(LogicalKeyboardKey.keyS, control: true, shift: true),
               onPressed: () => _saveFileAs(context),
               child: const Text('Save As...'),
+            ),
+            const Divider(),
+            MenuItemButton(
+              shortcut: const SingleActivator(LogicalKeyboardKey.keyP, control: true),
+              onPressed: isLockedForMenu ? null : () => _printActiveTab(context),
+              child: const Text('Print...'),
             ),
             const Divider(),
             MenuItemButton(
@@ -929,6 +955,113 @@ class _MainScreenState extends State<MainScreen> {
           'cannot store. Saving as RTF will remove them from the file. To keep '
           'them, cancel and use Save As with the .scrb format.',
       confirmLabel: 'Save Anyway',
+    );
+  }
+
+  // ── Print ────────────────────────────────────────────────────────────────
+
+  /// Ctrl+P / File > Print. The note goes from memory to RTF to the printer
+  /// the user picks in the standard Windows print dialog; nothing is written
+  /// to disk on the way (see PrintService).
+  Future<void> _printActiveTab(BuildContext context) async {
+    if (_printing) return;
+    final editor = context.read<EditorProvider>();
+    final tab = editor.activeTab;
+    if (tab == null) return;
+
+    switch (printGateFor(tab)) {
+      case PrintGate.locked:
+        _showSnack(context, 'Unlock this tab to print it (Ctrl+L).');
+        return;
+      case PrintGate.empty:
+        _showSnack(context, 'Nothing to print: this note is empty.');
+        return;
+      case PrintGate.confirmEncrypted:
+        if (!await _confirmPrintEncrypted(context)) return;
+        if (!context.mounted) return;
+      case PrintGate.ready:
+        break;
+    }
+
+    // The auto-lock can fire while a dialog is open, and a lock wipes the
+    // note from memory. Check before converting and again before printing,
+    // so a locked tab never prints, not even as a blank page.
+    bool stillPrintable() =>
+        context.mounted && editor.tabs.contains(tab) && !tab.isLocked;
+    if (!stillPrintable()) return;
+
+    _printing = true;
+    try {
+      // Snapshot now: the job prints exactly this content, whatever is typed
+      // while the print dialog is open.
+      final job = await PrintService.prepare(
+        richText: tab.mode == EditorMode.richText,
+        plainText: tab.controller.text,
+        deltaJson: tab.deltaJson,
+        fontFamily: tab.tabFontFamily,
+        fontSize: tab.tabFontSize,
+        title: tab.fileName,
+      );
+      if (!stillPrintable() || !context.mounted) return;
+      if (job.dropped) {
+        if (!await _confirmPrintDropped(context)) return;
+        if (!stillPrintable() || !context.mounted) return;
+      }
+
+      final outcome = await PrintService.printJob(job);
+      if (!context.mounted) return;
+      switch (outcome.status) {
+        case PrintStatus.printed:
+          final pages = outcome.pagesPrinted == 1
+              ? '1 page'
+              : '${outcome.pagesPrinted} pages';
+          final to = outcome.printer == null ? 'the printer' : outcome.printer!;
+          _showSnack(context, 'Sent $pages to $to.');
+        case PrintStatus.cancelled:
+          break;
+        case PrintStatus.noPagesInRange:
+          final count = outcome.pageCount == 1
+              ? '1 page'
+              : '${outcome.pageCount} pages';
+          _showSnack(context, 'Nothing printed: this note has only $count.');
+        case PrintStatus.empty:
+          _showSnack(context, 'Nothing to print: this note is empty.');
+        case PrintStatus.failed:
+          debugPrint('Print failed: ${outcome.detail}');
+          _showSnack(context, 'Could not print.');
+      }
+    } catch (e) {
+      debugPrint('Print failed: $e');
+      if (context.mounted) _showSnack(context, 'Could not print.');
+    } finally {
+      _printing = false;
+    }
+  }
+
+  /// Shown before an encrypted note goes to the printer: the encryption
+  /// protects the file, not the paper or the print queue.
+  Future<bool> _confirmPrintEncrypted(BuildContext context) {
+    if (!context.mounted) return Future.value(false);
+    return showScribConfirm(
+      context,
+      title: 'Print an Encrypted Note?',
+      message: 'Printing sends this note to the printer unencrypted. Windows '
+          'keeps a copy on disk in its print queue until the printer is done '
+          'with it, and cloud printers such as Universal Print upload it.',
+      confirmLabel: 'Print',
+    );
+  }
+
+  /// Shown when the note has content RTF cannot hold, which therefore
+  /// cannot print either (RtfExport.dropped).
+  Future<bool> _confirmPrintDropped(BuildContext context) {
+    if (!context.mounted) return Future.value(false);
+    return showScribConfirm(
+      context,
+      title: 'Some Content Will Not Print',
+      message: 'This note has tables, SVG images or other content Scrib '
+          'cannot print yet. The rest of the note will print without them.',
+      confirmLabel: 'Print Anyway',
     );
   }
 
@@ -1459,6 +1592,11 @@ class _MainScreenState extends State<MainScreen> {
         category: 'File', title: 'Save As...', icon: Icons.save_as_outlined,
         shortcut: 'Ctrl+Shift+S', action: () => _saveFileAs(context),
       ),
+      if (tab != null && !isLocked)
+        ScribCommand(
+          category: 'File', title: 'Print...', icon: Icons.print_outlined,
+          shortcut: 'Ctrl+P', action: () => _printActiveTab(context),
+        ),
       ScribCommand(
         category: 'File', title: 'Close Tab', icon: Icons.close,
         shortcut: 'Ctrl+W', action: () => _closeCurrentTab(context),

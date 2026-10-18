@@ -85,6 +85,12 @@ const double customFontSizeMax = 144.0;
 const double accentBorderAlpha = 0.45;
 const double editorContentPadding = 16.0;
 
+/// Font and size of rich text that carries no font or size attribute of its
+/// own. The rich editor draws it this way, and printing uses the same values
+/// so the page matches the screen.
+const String richTextDefaultFontFamily = 'Calibri';
+const double richTextDefaultFontSize = 14.0;
+
 /// Note colors palette - 16 research-backed colors (shared with mobile)
 const List<Color> noteColors = [
   Color(0xFFFF7F50), // Coral Red

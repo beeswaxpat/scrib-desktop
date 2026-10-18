@@ -41,6 +41,8 @@ On your phone? Scrib for iPhone and Android encrypts every note on the device: [
 
 **Files.** Open `.txt`, `.scrb`, `.rtf`, `.md`, `.log`, `.csv`, `.json`, `.xml`, `.yaml`, `.yml`, `.ini`, `.cfg`. Save as `.txt`, `.scrb`, `.rtf`. Drag and drop from Explorer, including multi-file drops. RTF import and export round-trips bold, italic, colors, fonts, sizes, lists, checklists, headers, quotes, links, and sub/superscript through Word and WordPad. Images are kept in `.rtf` too: PNG and JPEG as they are, GIF, WebP and BMP converted to PNG (an animated GIF keeps its first frame). Tables and SVG images cannot be stored in RTF; Scrib asks before a save would remove them, and `.scrb` keeps everything.
 
+**Printing.** `Ctrl+P` opens the standard Windows print dialog, so any printer installed in Windows works, including Microsoft Print to PDF and Universal Print. Pick pages and copies there. Rich text prints with its formatting and images; tables and SVG images do not print yet, and Scrib says so first. Printing an encrypted note asks first too, because the printout and the Windows print queue are not encrypted. A locked tab cannot be printed.
+
 **Save safety.** Writes are atomic, so a crash mid-save cannot truncate a file. Scrib asks before replacing a file you did not pick, before overwriting a file another program changed while it was open, and before writing over a note another tab already has open. A save that is refused leaves the tab unsaved rather than reporting success.
 
 **Encryption.** Toggle per tab with `Ctrl+E`. Lock a tab (`Ctrl+L`) to save it and wipe the decrypted content and password from the tab. Optional auto-lock after 1, 5, or 15 minutes idle (off by default). Change Password re-encrypts in place. Key derivation runs in a background isolate.
@@ -57,6 +59,7 @@ Press `F1` in the app for the full keyboard shortcut reference.
 |---|---|---|---|
 | `Ctrl+N` / `Ctrl+O` | New tab / Open | `Ctrl+F` / `Ctrl+H` | Find / Replace |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save As | `Ctrl+Shift+F` | Search all tabs |
+| `Ctrl+P` | Print | `F1` | Shortcut reference |
 | `Ctrl+W` / `Ctrl+Shift+T` | Close / Reopen tab | `F3` / `Shift+F3` | Find next / previous |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / Previous tab | `Ctrl+G` | Go to line |
 | `Ctrl+1`..`Ctrl+8` / `Ctrl+9` | Go to tab / last tab | `Ctrl+E` / `Ctrl+L` | Encrypt / Lock |

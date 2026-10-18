@@ -15,6 +15,7 @@ const Map<String, List<List<String>>> _shortcutGroups = {
     ['Open', 'Ctrl+O'],
     ['Save', 'Ctrl+S'],
     ['Save As', 'Ctrl+Shift+S'],
+    ['Print', 'Ctrl+P'],
     ['Close tab', 'Ctrl+W'],
   ],
   'Edit': [

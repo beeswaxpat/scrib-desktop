@@ -77,20 +77,40 @@ class RtfService {
   static bool dropsEmbeds(String deltaJson) => exportDelta(deltaJson).dropped;
 
   /// [deltaToRtf] plus whether anything was left out (see [RtfExport]).
-  static RtfExport exportDelta(String deltaJson) {
-    if (deltaJson.isEmpty) return RtfExport(_wrapRtf(''), false);
+  ///
+  /// [baseFont] and [baseFontSize] set the font and size (in points) of text
+  /// that carries no font or size of its own. Saves leave both null, which
+  /// keeps the exported file byte for byte what it has always been: Times New
+  /// Roman at the reader's default size. Printing passes the editor's own
+  /// defaults so the page matches the screen.
+  static RtfExport exportDelta(String deltaJson,
+      {String? baseFont, double? baseFontSize}) {
+    final defaultFont = baseFont ?? 'Times New Roman';
+    final baseFontTable =
+        '{\\fonttbl{\\f0\\fswiss ${_escapeRtf(defaultFont)};}}';
+    final baseSize =
+        baseFontSize == null ? '' : '${_fontSizeControl(baseFontSize)} ';
+    if (deltaJson.isEmpty) {
+      return RtfExport(_wrapRtf(baseSize, fontTable: baseFontTable), false);
+    }
 
     final List<dynamic> ops;
     try {
       final decoded = jsonDecode(deltaJson);
       if (decoded is! List) {
-        return RtfExport(_wrapRtf('${_escapeRtf(deltaJson)}\\par\n'), false);
+        return RtfExport(
+            _wrapRtf('$baseSize${_escapeRtf(deltaJson)}\\par\n',
+                fontTable: baseFontTable),
+            false);
       }
       ops = decoded;
     } catch (_) {
-      return RtfExport(_wrapRtf('${_escapeRtf(deltaJson)}\\par\n'), false);
+      return RtfExport(
+          _wrapRtf('$baseSize${_escapeRtf(deltaJson)}\\par\n',
+              fontTable: baseFontTable),
+          false);
     }
-    final fonts = <String>{'Times New Roman'}; // Default font at index 0
+    final fonts = <String>{defaultFont}; // Default font at index 0
     final colors = <int>[];
 
     // First pass: collect the fonts and colors the document uses. Both need a
@@ -250,7 +270,7 @@ class RtfService {
         content.write('\\par\n');
       }
 
-      return _wrapRtf(content.toString(),
+      return _wrapRtf('$baseSize$content',
           fontTable: fontTable.toString(), colorTable: colorTable.toString());
     }
 
@@ -1090,6 +1110,36 @@ class RtfService {
       return '{';
     }
     return '';
+  }
+
+  /// A plain-text note as RTF in [fontFamily] at [fontSize] points, for
+  /// printing: one paragraph per line, every character escaped, no other
+  /// formatting. Nothing in [text] can become an RTF control word, so a note
+  /// that happens to contain `{\rtf1` prints as those characters.
+  static String plainTextToRtf(String text,
+      {required String fontFamily, required double fontSize}) {
+    // ';' ends a font table entry, so a name containing one would spill into
+    // the table and the rest of the name would be read as control text.
+    final name = fontFamily.replaceAll(';', '').trim();
+    final body = StringBuffer('${_fontSizeControl(fontSize)} ');
+    final lines =
+        text.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n');
+    for (final line in lines) {
+      body.write(_escapeRtf(line));
+      body.write('\\par\n');
+    }
+    return _wrapRtf(body.toString(),
+        fontTable:
+            '{\\fonttbl{\\f0\\fnil ${_escapeRtf(name.isEmpty ? 'Calibri' : name)};}}');
+  }
+
+  /// `\fsN` for a size in points (\fs is in half-points), bounded the same way
+  /// as a run's own size: 400pt and up is clamped, and a size that is not a
+  /// positive finite number falls back to 12pt.
+  static String _fontSizeControl(double size) {
+    if (!size.isFinite || size <= 0) return '\\fs24';
+    final half = size >= 400 ? 800 : (size * 2).round();
+    return '\\fs${half < 1 ? 1 : half}';
   }
 
   static String _wrapRtf(String content,

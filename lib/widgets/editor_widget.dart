@@ -350,10 +350,9 @@ class ScribEditorState extends State<ScribEditor> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    // Fixed defaults — rich text font/size is controlled via inline Delta attributes,
-    // not the per-tab plain-text settings.
-    const richTextDefaultFontFamily = 'Calibri';
-    const richTextDefaultFontSize = 14.0;
+    // Fixed defaults (richTextDefaultFontFamily / richTextDefaultFontSize in
+    // constants.dart): rich text font/size is controlled via inline Delta
+    // attributes, not the per-tab plain-text settings.
 
     return QuillEditor(
       controller: _quillController!,

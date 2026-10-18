@@ -24,6 +24,11 @@ dependencies:
   # FFI â€” used for Windows atomic file replace (MoveFileExW)
   ffi: ^2.1.0
 
+  # Printing: the window, dialog and GDI calls behind File > Print, where
+  # Windows' RichEdit control lays out the pages. Already in pubspec.lock as
+  # a dependency of file_picker; declared because we import it directly.
+  win32: ^5.15.0
+
   # Encryption â€” AES-256-CBC, PBKDF2-SHA256, HMAC-SHA256
   pointycastle: ^4.0.0
 

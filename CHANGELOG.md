@@ -4,6 +4,26 @@ All notable changes to Scrib Desktop are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Printing.** File > Print (`Ctrl+P`, also in the command palette) prints
+  the active note through the standard Windows print dialog, so it works with
+  any printer installed in Windows, including Microsoft Print to PDF and
+  Universal Print. Choose the printer, pages and copies there. Rich text
+  prints with its fonts, colors, lists, links and images. Plain text prints in
+  the tab's font and size. Scrib prints with the RichEdit engine built into
+  Windows (the one WordPad prints with), and the note never goes to a file on
+  the way.
+
+  Limitations:
+  - Tables and SVG images do not print yet. Scrib says so before it prints.
+  - Printing an encrypted note asks first. The printout is not encrypted.
+    Windows keeps a copy in its print queue on disk until the printer is done,
+    and cloud printers such as Universal Print upload it.
+  - A locked tab cannot be printed. Unlock it first.
+
 ## [1.10.2] - 2026-10-17 - Images in .rtf files
 
 A feature release. A rich-text note saved as `.rtf` now keeps its images, so
