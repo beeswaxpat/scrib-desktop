@@ -7,9 +7,9 @@ encryption, file handling, and data integrity seriously.
 
 | Version | Supported |
 |---------|-----------|
-| 1.10.x  | ✅ |
-| 1.9.x   | ⚠️ Critical fixes only |
-| < 1.9   | ❌ |
+| 1.11.x  | ✅ |
+| 1.10.x  | ⚠️ Critical fixes only |
+| < 1.10  | ❌ |
 
 ## Reporting a vulnerability
 

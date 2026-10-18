@@ -4,7 +4,12 @@ All notable changes to Scrib Desktop are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.11.0] - 2026-10-18 - Printing and a table fix
+
+Printing arrives (`Ctrl+P`), and a bug that could replace a table cell's text
+with the whole note is fixed. That bug affected 1.10.2 and earlier, so
+updating is recommended. Scrib is now built with Flutter 3.47.7. The `.scrb`
+file format is unchanged.
 
 ### Added
 
