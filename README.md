@@ -29,6 +29,18 @@ On your phone? Scrib for iPhone and Android encrypts every note on the device: [
 
 ---
 
+## Install
+
+With winget, the Windows package manager:
+
+```
+winget install BeeswaxPat.ScribDesktop
+```
+
+Then open a new terminal and run `scrib_desktop`. `winget upgrade BeeswaxPat.ScribDesktop` installs new versions once they reach winget.
+
+Or download the zip from [Releases](https://github.com/beeswaxpat/scrib-desktop/releases), unzip it and run `scrib_desktop.exe`. The zip route needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64), which winget installs for you.
+
 ## Features
 
 **Editing.** Plain text and rich text per tab (`Ctrl+M`). Bold, italic, underline, strikethrough, sub/superscript, headings, bullet and numbered lists, checklists, block quotes, alignment, indent, text colors and highlights. 14 system fonts, sizes 8 to 72.
