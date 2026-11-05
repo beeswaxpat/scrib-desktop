@@ -1,4 +1,4 @@
-﻿name: scrib_desktop
+name: scrib_desktop
 description: "The encrypted Notepad. No tracking. No cloud. Just notes."
 publish_to: 'none'
 
@@ -38,7 +38,7 @@ dependencies:
   flutter_quill: 11.6.0
 
   # Desktop-specific
-  window_manager: ^0.5.2
+  window_manager: ^0.6.0
   desktop_drop: ^0.8.4
 
   # Image embeds â€” flutter_svg renders SVG; image decodes the long-tail raster
